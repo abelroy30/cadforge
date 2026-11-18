@@ -5,6 +5,7 @@
 mod api;
 mod model;
 mod pipeline;
+mod step;
 mod stl;
 
 use model::{Db, Run};

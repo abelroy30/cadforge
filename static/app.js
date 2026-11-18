@@ -10,6 +10,7 @@ let activeRunId = null;
 let renderer, scene, camera, controls, partGroup, gridHelper;
 let viewMode = "shaded";
 let partGeometry = null;
+let fitRadius = 1;
 
 function initViewport() {
   const host = $("#viewport");
@@ -80,7 +81,23 @@ function setPart(positions) {
   geom.translate(-c.x, -c.y, -c.z);
   geom.computeBoundingSphere();
   partGeometry = geom;
+  fitRadius = geom.boundingSphere.radius;
   buildPart();
+  fitView();
+}
+
+function setPoints(positions) {
+  clearPart();
+  partGeometry = null;
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geom.computeBoundingSphere();
+  const c = geom.boundingSphere.center;
+  geom.translate(-c.x, -c.y, -c.z);
+  geom.computeBoundingSphere();
+  fitRadius = geom.boundingSphere.radius;
+  const mat = new THREE.PointsMaterial({ color: 0x7dd3fc, size: fitRadius / 90, sizeAttenuation: true });
+  partGroup.add(new THREE.Points(geom, mat));
   fitView();
 }
 
@@ -98,8 +115,7 @@ function buildPart() {
 }
 
 function fitView() {
-  if (!partGeometry || !partGeometry.boundingSphere) return;
-  const r = Math.max(partGeometry.boundingSphere.radius, 0.4);
+  const r = Math.max(fitRadius, 0.4);
   const dist = (r / Math.sin((camera.fov * Math.PI) / 360)) * 1.35;
   camera.position.set(0.85, 0.62, 1).normalize().multiplyScalar(dist);
   controls.target.set(0, 0, 0);
@@ -233,8 +249,18 @@ async function selectAsset(id) {
     setReadout(asset.name + "  ·  " + mesh.triangles.toLocaleString() + " tri  ·  " +
       (b[3] - b[0]).toFixed(2) + " x " + (b[4] - b[1]).toFixed(2) + " x " + (b[5] - b[2]).toFixed(2));
   } else if (asset.kind === "step") {
-    clearPart();
-    setReadout(asset.name + "  ·  STEP part, history stored");
+    const hist = await api("/api/assets/" + id + "/history");
+    const p = hist.preview;
+    if (p.mode === "triangles") {
+      setPart(p.positions);
+    } else if (p.mode === "points") {
+      setPoints(p.positions);
+    } else {
+      clearPart();
+    }
+    const s = hist.summary;
+    setReadout(asset.name + "  ·  " + s.faces + " faces  ·  " + s.solids + " solid  ·  " +
+      p.mode + " preview");
   } else {
     clearPart();
     setReadout(asset.name + "  ·  " + asset.kind + " (no geometry to draw)");
@@ -257,9 +283,28 @@ function renderProps() {
   put("size", (asset.size / 1024).toFixed(1) + " KB");
   if (asset.triangles != null) put("triangles", asset.triangles.toLocaleString());
   if (asset.bbox) put("bounds", asset.bbox.map((n) => n.toFixed(2)).join(", "));
-  if (asset.header) put("history", asset.header, true);
+  if (asset.header) put("file header", asset.header, true);
   put("uploaded", asset.uploaded_at);
   box.append(dl);
+
+  if (asset.step) {
+    const s = asset.step;
+    const wrap = el("div", "history");
+    wrap.append(el("h3", null, "Reconstructed build history"));
+    wrap.append(el("p", "hint",
+      s.vertices + " vertices, " + s.edges + " edges, " + s.faces + " faces - " +
+      s.planar_faces + " planar, " + s.cylindrical_faces + " cylindrical, " +
+      s.toroidal_faces + " toroidal"));
+    const ol = el("ol", "feature-tree");
+    s.steps.forEach((step) => {
+      const li = el("li");
+      li.append(el("span", "op", step.op));
+      li.append(el("span", "detail", step.detail));
+      ol.append(li);
+    });
+    wrap.append(ol);
+    box.append(wrap);
+  }
 }
 
 /* ------------------------------------------------------------------ upload */

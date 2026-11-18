@@ -38,6 +38,20 @@ streams its output into the run log. The run is passed as JSON in
 CADFORGE_TRAINER="python3 trainer/train.py" cargo run
 ```
 
+## Reading STEP parts
+
+The studio reads STEP/STP directly - no CAD kernel required - and reconstructs
+what the part is made of: topology counts, units, and the build steps implied by
+the boundary representation (an extrude, holes, a hole pattern, fillets).
+
+```sh
+tools/make_step.py plate > plate.step     # 60x40x8 plate with 4 x D6 holes
+tools/make_step.py box   > box.step       # plain box
+```
+
+Upload one, click it in the Artifacts tree, and the reconstructed history
+appears in the inspector while the part renders in the viewport.
+
 ## Environment
 
 | Variable | Default | Meaning |
@@ -56,7 +70,10 @@ src/api.rs        HTTP API + SSE
 src/model.rs      types and persistence
 src/pipeline.rs   the training pipeline and its stages
 src/stl.rs        STL parser (ASCII + binary)
+src/step.rs       STEP (ISO 10303-21) reader + build-history reconstruction
 static/           the web GUI (plain JS + three.js, no build step)
+tools/make_step.py  generate STEP test parts
+tests/fixtures/   generated parts used by the tests
 ```
 
 ## Tests

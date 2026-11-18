@@ -23,7 +23,10 @@ The whole loop is wired end to end, with the modelling intelligence stubbed:
 | Datasets built from selected artifacts | working |
 | Training pipeline with 7 real stages, live progress + log over SSE | working (simulated) |
 | External trainer hook (`CADFORGE_TRAINER`) | working |
-| Real fine-tuning, geometry kernel, feature-history extraction | **not yet** |
+| STEP (ISO 10303-21) reader: B-rep topology, units, entity graph | working |
+| Feature history read back off the B-rep (extrude, holes, patterns, fillets) | working |
+| STEP preview: planar faces triangulated, holes drawn as sampled strips | working |
+| SolidWorks-native history, B-spline surfaces, real fine-tuning | **not yet** |
 
 ## 2. The loop we are building
 
@@ -99,11 +102,18 @@ The seven stages are the real workflow, not filler:
   run handed to it as JSON in `$CADFORGE_RUN`; stdout/stderr stream into the run log.
 * Implement the `Trainer` trait in Rust and swap it into `pipeline::execute`.
 
-### 3.5 Geometry and CAD drivers (the next real work)
-* **Mesh** (STL, OBJ, 3MF): in-process Rust. Started.
-* **B-rep + history** (STEP/STP): OpenCASCADE through `opencascade-rs`. This is
-  where the SolidWorks feature history gets recovered — the single most valuable
-  and most difficult piece.
+### 3.5 Geometry and CAD drivers
+* **Mesh** (STL, OBJ, 3MF): in-process Rust, `src/stl.rs`. Working.
+* **STEP history** (STEP/STP): `src/step.rs` is a dependency-free ISO 10303-21
+  reader - tokenizer, entity graph, topology counts, units - plus an inference
+  pass that reads the *build steps* back out of the B-rep: two parallel planes
+  are an extrude, a cylindrical face is a hole, repeated holes on one axis are
+  a pattern, a toroidal face is a fillet. Working, and covered by tests against
+  generated parts.
+* **Still missing here**: B-spline/advanced surfaces, true face trimming, and
+  the SolidWorks-native feature tree (which lives in the `.SLDPRT`, not in the
+  exchanged file). `opencascade-rs` is the intended route for the heavy B-rep
+  work once preview fidelity matters more than zero dependencies.
 * **Drivers**: SolidWorks via its COM API (VBScript/PowerShell on Windows, or a
   Windows worker), FreeCAD headless via Python. Both emit a script plus the
   resulting geometry so the model can be scored against the target.
@@ -112,10 +122,11 @@ The seven stages are the real workflow, not filler:
 
 **Phase 1 — see real parts (now).** Done: upload, viewport, pipeline shell, live runs.
 
-**Phase 2 — learn the operation language.**
+**Phase 2 — learn the operation language.** *(in progress)*
+- ~~Read STEP and recover the build steps from the B-rep.~~ Done: `src/step.rs`,
+  with `tools/make_step.py` generating parts to test against.
 - Define the operation token set (sketch, constraint, extrude, cut, fillet, chamfer,
-  pattern, boolean, mate) as a versioned schema.
-- STEP -> B-rep via OpenCASCADE; export a canonical history JSON per part.
+  pattern, boolean, mate) as a versioned schema, and map the inferred steps onto it.
 - A converter that turns that history into token sequences, and back into a script.
 - FreeCAD driver so a generated sequence can be executed and rebuilt.
 

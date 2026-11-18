@@ -69,6 +69,7 @@ async fn upload_asset(
         triangles: None,
         bbox: None,
         header: None,
+        step: None,
     };
 
     match kind {
@@ -79,7 +80,13 @@ async fn upload_asset(
             }
             Err(e) => return Err(ApiError::bad_request(format!("could not read STL: {e}"))),
         },
-        AssetKind::Step => asset.header = Some(step_header(&body)),
+        AssetKind::Step => {
+            asset.header = Some(step_header(&body));
+            match crate::step::analyze(&String::from_utf8_lossy(&body)) {
+                Ok(analysis) => asset.step = Some(analysis.summary),
+                Err(e) => tracing::warn!("could not read STEP geometry: {e}"),
+            }
+        }
         _ => {}
     }
 
@@ -137,6 +144,36 @@ async fn asset_mesh(
         "triangles": mesh.triangles,
         "bbox": mesh.bbox,
         "positions": mesh.positions,
+    })))
+}
+
+/// The build history reconstructed from a STEP part, plus a preview to draw.
+async fn asset_history(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let (path, meta) = {
+        let db = app.db.lock().unwrap();
+        let asset = db.asset(&id).ok_or_else(|| ApiError::not_found("asset"))?;
+        (
+            crate::model::assets_dir(&app.root).join(format!("{}.{}", asset.id, asset.ext)),
+            asset.clone(),
+        )
+    };
+    let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
+    let analysis = crate::step::analyze(&String::from_utf8_lossy(&bytes)).map_err(ApiError::bad_request)?;
+    let (mode, positions) = if !analysis.triangles.is_empty() {
+        ("triangles", analysis.triangles)
+    } else if !analysis.points.is_empty() {
+        ("points", analysis.points)
+    } else {
+        ("none", Vec::new())
+    };
+    Ok(Json(serde_json::json!({
+        "id": meta.id,
+        "name": meta.name,
+        "summary": analysis.summary,
+        "preview": { "mode": mode, "positions": positions },
     })))
 }
 
@@ -327,6 +364,7 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/api/assets", post(upload_asset))
         .route("/api/assets/{id}", delete(delete_asset))
         .route("/api/assets/{id}/mesh", get(asset_mesh))
+        .route("/api/assets/{id}/history", get(asset_history))
         .route("/api/assets/{id}/file", get(asset_file))
         .route("/api/models", post(create_model))
         .route("/api/datasets", post(create_dataset))

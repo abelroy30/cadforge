@@ -34,6 +34,9 @@ pub struct Asset {
     /// Free-form header we pulled out of a STEP file (schema, product name).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
+    /// What the B-rep says about how the part was built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<crate::step::Summary>,
 }
 
 /// A base model the user points the studio at, or a model they define themselves.

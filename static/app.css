@@ -160,3 +160,24 @@ select {
 }
 .console .warn { color: var(--warn); }
 .console .error { color: var(--err); }
+
+/* reconstructed build history */
+.history { margin-top: 12px; }
+.history h3 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .9px;
+  color: var(--muted); margin: 0 0 6px; font-weight: 600;
+}
+.feature-tree { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+.feature-tree li {
+  position: relative; padding: 5px 0 5px 28px;
+  border-left: 1px solid var(--line-2); margin-left: 9px;
+}
+.feature-tree li::before {
+  counter-increment: step; content: counter(step);
+  position: absolute; left: -9px; top: 6px;
+  width: 17px; height: 17px; border-radius: 50%;
+  background: #16233a; border: 1px solid var(--accent-2);
+  color: var(--accent-2); font: 10px/15px var(--mono); text-align: center;
+}
+.feature-tree .op { display: block; font-weight: 600; font-size: 12px; }
+.feature-tree .detail { display: block; color: var(--muted); font: 11px/1.45 var(--mono); }
