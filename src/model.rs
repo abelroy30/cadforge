@@ -9,6 +9,15 @@ pub enum AssetKind {
     Mesh,
     /// A STEP/STP part. Carries the modelling history we want to learn from.
     Step,
+    /// A SolidWorks part (`.SLDPRT`) - native feature tree inside.
+    SwPart,
+    /// A SolidWorks assembly (`.SLDASM`).
+    SwAssembly,
+    /// A SolidWorks drawing (`.SLDDRW`).
+    SwDrawing,
+    /// A feature-tree export from SolidWorks: the true modelling history,
+    /// taken from inside the document rather than inferred from its geometry.
+    History,
     /// An image used as conditioning input.
     Image,
     /// A video used as conditioning input.
@@ -37,6 +46,20 @@ pub struct Asset {
     /// What the B-rep says about how the part was built.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<crate::step::Summary>,
+    /// What a SolidWorks document turned out to contain: its streams, and its
+    /// embedded preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalogue: Option<crate::sldworks::Catalogue>,
+}
+
+impl Asset {
+    /// Is this a SolidWorks document of some kind?
+    pub fn is_solidworks(&self) -> bool {
+        matches!(
+            self.kind,
+            AssetKind::SwPart | AssetKind::SwAssembly | AssetKind::SwDrawing
+        )
+    }
 }
 
 /// A base model the user points the studio at, or a model they define themselves.
@@ -143,6 +166,12 @@ pub fn assets_dir(root: &Path) -> PathBuf {
     root.join("assets")
 }
 
+/// Where an artifact's extracted preview image lives. The format is worked out
+/// from the bytes when it is served, so no extension is needed here.
+pub fn preview_path(root: &Path, id: &str) -> PathBuf {
+    assets_dir(root).join(format!("{id}.preview"))
+}
+
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -156,6 +185,10 @@ pub fn classify(name: &str) -> (String, AssetKind) {
     let kind = match ext.as_str() {
         "stl" => AssetKind::Mesh,
         "step" | "stp" => AssetKind::Step,
+        "sldprt" => AssetKind::SwPart,
+        "sldasm" => AssetKind::SwAssembly,
+        "slddrw" => AssetKind::SwDrawing,
+        "json" => AssetKind::History,
         "png" | "jpg" | "jpeg" | "webp" | "gif" => AssetKind::Image,
         "mp4" | "mov" | "webm" => AssetKind::Video,
         _ => AssetKind::Other,

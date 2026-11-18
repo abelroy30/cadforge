@@ -261,6 +261,12 @@ async function selectAsset(id) {
     const s = hist.summary;
     setReadout(asset.name + "  ·  " + s.faces + " faces  ·  " + s.solids + " solid  ·  " +
       p.mode + " preview");
+  } else if (asset.kind === "history") {
+    clearPart();
+    const s = asset.step;
+    const n = s ? Math.max(0, s.steps.length - 1) : 0;
+    setReadout(asset.name + "  ·  " + n + " feature" + (n === 1 ? "" : "s") +
+      " exported from SolidWorks");
   } else {
     clearPart();
     setReadout(asset.name + "  ·  " + asset.kind + " (no geometry to draw)");
@@ -289,12 +295,15 @@ function renderProps() {
 
   if (asset.step) {
     const s = asset.step;
+    const exported = asset.kind === "history";
     const wrap = el("div", "history");
-    wrap.append(el("h3", null, "Reconstructed build history"));
-    wrap.append(el("p", "hint",
-      s.vertices + " vertices, " + s.edges + " edges, " + s.faces + " faces - " +
-      s.planar_faces + " planar, " + s.cylindrical_faces + " cylindrical, " +
-      s.toroidal_faces + " toroidal"));
+    wrap.append(el("h3", null,
+      exported ? "Feature tree, as recorded by SolidWorks" : "Reconstructed build history"));
+    wrap.append(el("p", "hint", exported
+      ? "The real modelling history, taken from inside the document - not inferred from geometry."
+      : s.vertices + " vertices, " + s.edges + " edges, " + s.faces + " faces - " +
+        s.planar_faces + " planar, " + s.cylindrical_faces + " cylindrical, " +
+        s.toroidal_faces + " toroidal"));
     const ol = el("ol", "feature-tree");
     s.steps.forEach((step) => {
       const li = el("li");
@@ -304,30 +313,75 @@ function renderProps() {
     });
     wrap.append(ol);
 
-    const result = el("div", "rebuild");
-    const btn = el("button", "primary", "Rebuild & compare");
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      btn.textContent = "Rebuilding...";
-      try {
-        const r = await api("/api/rebuild", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ asset_id: asset.id, engine: "native" }),
-        });
-        if (r.triangles && r.triangles.length) setPart(r.triangles);
-        renderRebuild(r);
-      } catch (err) {
-        alert("Rebuild failed: " + err.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "Rebuild & compare";
-      }
-    });
-    wrap.append(el("p", "hint", "Rebuild this part from its own inferred operations, then measure the difference."));
-    wrap.append(btn, result);
+    if (exported) {
+      wrap.append(el("p", "hint",
+        "This is the ground truth for training: the steps SolidWorks actually recorded. " +
+        "Pair it with the geometry of the same part to teach a model to go the other way."));
+    } else {
+      const result = el("div", "rebuild");
+      const btn = el("button", "primary", "Rebuild & compare");
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        btn.textContent = "Rebuilding...";
+        try {
+          const r = await api("/api/rebuild", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ asset_id: asset.id, engine: "native" }),
+          });
+          if (r.triangles && r.triangles.length) setPart(r.triangles);
+          renderRebuild(r);
+        } catch (err) {
+          alert("Rebuild failed: " + err.message);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Rebuild & compare";
+        }
+      });
+      wrap.append(el("p", "hint", "Rebuild this part from its own inferred operations, then measure the difference."));
+      wrap.append(btn, result);
+    }
     box.append(wrap);
   }
+
+  if (asset.catalogue) renderCatalogue(asset, box);
+}
+
+/// A SolidWorks document: what is inside it, and its own preview image.
+function renderCatalogue(asset, box) {
+  const c = asset.catalogue;
+  const wrap = el("div", "history");
+  wrap.append(el("h3", null, c.kind_label));
+  wrap.append(el("p", "hint", c.container + "  ·  " + c.streams.length + " streams  ·  " +
+    (c.stream_bytes / 1024).toFixed(0) + " KB of stream data"));
+
+  if (c.preview) {
+    const img = el("img", "sw-preview");
+    img.src = "/api/assets/" + asset.id + "/preview";
+    img.alt = "embedded preview of " + asset.name;
+    wrap.append(img);
+    wrap.append(el("p", "hint", "Preview embedded in the document (" + c.preview.stream + ", " +
+      Math.round(c.preview.bytes / 1024) + " KB)."));
+  }
+
+  const table = el("table", "streams");
+  const head = el("tr");
+  ["stream", "size", "role"].forEach((h) => head.append(el("th", null, h)));
+  table.append(head);
+  c.streams.slice(0, 24).forEach((s) => {
+    const tr = el("tr", s.recognised ? "known" : "unknown");
+    tr.append(el("td", "name", s.name));
+    tr.append(el("td", "num", (s.size / 1024).toFixed(1) + " KB"));
+    tr.append(el("td", null, s.role));
+    table.append(tr);
+  });
+  wrap.append(table);
+  if (c.streams.length > 24) {
+    wrap.append(el("p", "hint", "...and " + (c.streams.length - 24) + " more, largest first."));
+  }
+
+  c.notes.forEach((n) => wrap.append(el("p", "hint", n)));
+  box.append(wrap);
 }
 
 function renderRebuild(r) {

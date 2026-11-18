@@ -70,6 +70,7 @@ async fn upload_asset(
         bbox: None,
         header: None,
         step: None,
+        catalogue: None,
     };
 
     match kind {
@@ -85,6 +86,52 @@ async fn upload_asset(
             match crate::step::analyze(&String::from_utf8_lossy(&body)) {
                 Ok(analysis) => asset.step = Some(analysis.summary),
                 Err(e) => tracing::warn!("could not read STEP geometry: {e}"),
+            }
+        }
+        AssetKind::SwPart | AssetKind::SwAssembly | AssetKind::SwDrawing => {
+            // A document we can open: read the container, keep the preview image,
+            // and record what is inside it.
+            match crate::sldworks::inspect(&body, &asset.ext) {
+                Ok(inspected) => {
+                    asset.header = Some(inspected.catalogue.headline());
+                    if let Some(preview) = &inspected.preview {
+                        let path = crate::model::preview_path(&app.root, &asset.id);
+                        if let Err(e) = std::fs::write(&path, &preview.bytes) {
+                            tracing::warn!("could not store preview for {}: {e}", asset.name);
+                        }
+                    }
+                    asset.catalogue = Some(inspected.catalogue);
+                }
+                Err(e) => {
+                    // Keep the file - the user uploaded it - but say plainly that
+                    // it could not be read.
+                    asset.header = Some(format!("could not be read as a document: {e}"));
+                    tracing::warn!("could not read {}: {e}", asset.name);
+                }
+            }
+        }
+        AssetKind::History => {
+            // A feature tree exported from inside SolidWorks. This is the true
+            // modelling history, not an inference from geometry.
+            match crate::swhist::parse(&String::from_utf8_lossy(&body)) {
+                Ok(export) => {
+                    let summary = crate::swhist::summary(&export);
+                    let n = summary.steps.len().saturating_sub(1);
+                    asset.header = Some(format!(
+                        "{} - {} feature{} exported from SolidWorks",
+                        if export.document.is_empty() {
+                            "feature tree"
+                        } else {
+                            export.document.as_str()
+                        },
+                        n,
+                        if n == 1 { "" } else { "s" }
+                    ));
+                    asset.step = Some(summary);
+                }
+                Err(e) => {
+                    return Err(ApiError::bad_request(format!("could not read history export: {e}")));
+                }
             }
         }
         _ => {}
@@ -122,6 +169,81 @@ fn step_header(bytes: &[u8]) -> String {
     } else {
         parts.join("\n")
     }
+}
+
+/// The stream catalogue of a stored document.
+///
+/// Recomputed on demand when it is missing, so documents uploaded before they
+/// could be read still work.
+async fn asset_streams(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let asset = {
+        let db = app.db.lock().unwrap();
+        db.asset(&id).cloned().ok_or_else(|| ApiError::not_found("asset"))?
+    };
+
+    if let Some(catalogue) = &asset.catalogue {
+        return Ok(Json(serde_json::json!({
+            "id": asset.id,
+            "name": asset.name,
+            "catalogue": catalogue,
+            "preview_url": catalogue.preview.as_ref().map(|_| format!("/api/assets/{id}/preview")),
+        })));
+    }
+
+    let ext = std::path::Path::new(&asset.name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let path = crate::model::assets_dir(&app.root).join(format!("{}.{}", asset.id, asset.ext));
+    let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
+    let inspected = crate::sldworks::inspect(&bytes, &ext).map_err(ApiError::bad_request)?;
+
+    if let Some(preview) = &inspected.preview {
+        let ppath = crate::model::preview_path(&app.root, &asset.id);
+        let _ = std::fs::write(&ppath, &preview.bytes);
+    }
+    let mut db = app.db.lock().unwrap();
+    if let Some(a) = db.assets.iter_mut().find(|a| a.id == asset.id) {
+        a.catalogue = Some(inspected.catalogue.clone());
+        a.header = Some(inspected.catalogue.headline());
+    }
+    db.save(&app.root).map_err(ApiError::internal)?;
+    drop(db);
+
+    Ok(Json(serde_json::json!({
+        "id": asset.id,
+        "name": asset.name,
+        "catalogue": inspected.catalogue,
+        "preview_url": inspected.preview.as_ref().map(|_| format!("/api/assets/{id}/preview")),
+    })))
+}
+
+/// The preview image extracted from a document, if it had one.
+async fn asset_preview(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let stored = {
+        let db = app.db.lock().unwrap();
+        let asset = db.asset(&id).ok_or_else(|| ApiError::not_found("asset"))?;
+        asset
+            .catalogue
+            .as_ref()
+            .and_then(|c| c.preview.as_ref())
+            .map(|p| p.content_type.clone())
+    };
+    let path = crate::model::preview_path(&app.root, &id);
+    let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("preview image"))?;
+    // Trust the bytes over the record: the file may outlive a stale catalogue.
+    let content_type = crate::sldworks::sniff_image(&bytes)
+        .map(|(_, ct)| ct.to_string())
+        .or(stored)
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    Ok(([("content-type", content_type)], bytes))
 }
 
 /// Triangle soup for the viewport, as a flat float array.
@@ -392,6 +514,10 @@ async fn delete_asset(
 ) -> Result<StatusCode, ApiError> {
     let mut db = app.db.lock().unwrap();
     let before = db.assets.len();
+    let ext = db
+        .asset(&id)
+        .map(|a| a.ext.clone())
+        .ok_or_else(|| ApiError::not_found("asset"))?;
     db.assets.retain(|a| a.id != id);
     if db.assets.len() == before {
         return Err(ApiError::not_found("asset"));
@@ -400,6 +526,11 @@ async fn delete_asset(
         ds.asset_ids.retain(|a| a != &id);
     }
     db.save(&app.root).map_err(ApiError::internal)?;
+    drop(db);
+
+    // Take the files with the record, including any extracted preview.
+    let _ = std::fs::remove_file(crate::model::assets_dir(&app.root).join(format!("{id}.{ext}")));
+    let _ = std::fs::remove_file(crate::model::preview_path(&app.root, &id));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -571,6 +702,8 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/api/assets/{id}", delete(delete_asset))
         .route("/api/assets/{id}/mesh", get(asset_mesh))
         .route("/api/assets/{id}/history", get(asset_history))
+        .route("/api/assets/{id}/streams", get(asset_streams))
+        .route("/api/assets/{id}/preview", get(asset_preview))
         .route("/api/assets/{id}/file", get(asset_file))
         .route("/api/models", post(create_model))
         .route("/api/datasets", post(create_dataset))

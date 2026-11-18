@@ -5,12 +5,15 @@
 mod api;
 mod freecad;
 mod model;
+mod ole;
 mod ops;
 mod pipeline;
 mod score;
+mod sldworks;
 mod solid;
 mod step;
 mod stl;
+mod swhist;
 mod vec3;
 
 use model::{Db, Run};
