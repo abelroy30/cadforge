@@ -1,6 +1,6 @@
 //! HTTP API. JSON in, JSON out; one SSE stream carries live run progress.
 
-use crate::model::{classify, now, Asset, AssetKind, BaseModel, Dataset, Db, Run, RunStatus};
+use crate::model::{classify, now, Action, Asset, AssetKind, BaseModel, Dataset, Db, Run, RunStatus};
 use crate::{stl, App};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -71,6 +71,7 @@ async fn upload_asset(
         header: None,
         step: None,
         catalogue: None,
+        actions: Vec::new(),
     };
 
     match kind {
@@ -138,9 +139,171 @@ async fn upload_asset(
     }
 
     let mut db = app.db.lock().unwrap();
+    asset.actions = actions_for(&asset);
     db.assets.push(asset.clone());
     db.save(&app.root).map_err(ApiError::internal)?;
+    drop(db);
+    // Tell every open studio that a new artifact is ready, so the list fills in
+    // live as a bulk upload lands rather than only on the next refresh.
+    let _ = app.asset_bus.send(asset.clone());
     Ok(Json(asset))
+}
+
+/// A step-by-step account of how an artifact was processed, for every kind, so
+/// the studio can draw the whole path as a tree. Nothing about an upload is
+/// hidden: what was read, what was found, and where each value came from.
+fn actions_for(asset: &Asset) -> Vec<Action> {
+    let mut root = vec![Action::new(
+        "upload",
+        format!(
+            "{} (.{}) · {} KB",
+            asset.name,
+            asset.ext,
+            asset.size / 1024
+        ),
+    )];
+
+    match asset.kind {
+        AssetKind::Mesh => {
+            if let (Some(triangles), Some(b)) = (asset.triangles, asset.bbox) {
+                root.push(
+                    Action::new("read mesh", format!("{triangles} triangles")).with(vec![Action::new(
+                        "bounds",
+                        format!(
+                            "{:.2} × {:.2} × {:.2}",
+                            b[3] - b[0],
+                            b[4] - b[1],
+                            b[5] - b[2]
+                        ),
+                    )]),
+                );
+            }
+        }
+        AssetKind::Step => {
+            if let Some(header) = &asset.header {
+                root.push(Action::new("read header", header.clone()));
+            }
+            if let Some(s) = &asset.step {
+                root.push(
+                    Action::new(
+                        "reconstruct history",
+                        format!(
+                            "from the B-rep: {} faces, {} edges, {} vertices",
+                            s.faces, s.edges, s.vertices
+                        ),
+                    )
+                    .with(
+                        s.steps
+                            .iter()
+                            .map(|l| Action::new(l.op.clone(), l.detail.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+        }
+        AssetKind::History => {
+            if let Some(s) = &asset.step {
+                root.push(
+                    Action::new(
+                        "read recording",
+                        "the feature tree exactly as SolidWorks recorded it",
+                    )
+                    .with(
+                        s.steps
+                            .iter()
+                            .map(|l| Action::new(l.op.clone(), l.detail.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+        }
+        AssetKind::SwPart | AssetKind::SwAssembly | AssetKind::SwDrawing => {
+            match &asset.catalogue {
+                Some(c) => {
+                    root.push(Action::new("open container", c.container.clone()));
+
+                    let total: usize = c.metadata.iter().map(|g| g.properties.len()).sum();
+                    if total > 0 {
+                        let groups: Vec<Action> = c
+                            .metadata
+                            .iter()
+                            .filter(|g| !g.properties.is_empty())
+                            .map(|g| {
+                                let label = match g.group.as_str() {
+                                    "summary" => "SummaryInformation",
+                                    "document" => "DocumentSummaryInformation",
+                                    "custom" => "custom properties (user-defined)",
+                                    other => other,
+                                };
+                                Action::new(
+                                    label,
+                                    format!("{} parameter(s)", g.properties.len()),
+                                )
+                                .with(
+                                    g.properties
+                                        .iter()
+                                        .map(|p| Action::new(p.name.clone(), p.value.clone()))
+                                        .collect(),
+                                )
+                            })
+                            .collect();
+                        root.push(
+                            Action::new("read parameters", format!("{total} parameter(s)"))
+                                .with(groups),
+                        );
+                    } else {
+                        root.push(Action::new(
+                            "read parameters",
+                            "no parameters stored in this file",
+                        ));
+                    }
+
+                    if !c.references.is_empty() {
+                        root.push(
+                            Action::new(
+                                "resolve references",
+                                format!("{} document(s)", c.references.len()),
+                            )
+                            .with(
+                                c.references
+                                    .iter()
+                                    .map(|r| {
+                                        Action::new(r.name.clone(), format!("found in `{}`", r.stream))
+                                    })
+                                    .collect(),
+                            ),
+                        );
+                    }
+
+                    let streams: Vec<Action> = c
+                        .streams
+                        .iter()
+                        .map(|s| {
+                            Action::new(s.name.clone(), format!("{} · {} KB", s.role, s.size / 1024))
+                        })
+                        .collect();
+                    root.push(
+                        Action::new("list streams", format!("{} stream(s)", c.streams.len()))
+                            .with(streams),
+                    );
+
+                    if let Some(p) = &c.preview {
+                        root.push(Action::new(
+                            "extract preview",
+                            format!("{} from `{}`", p.content_type, p.stream),
+                        ));
+                    }
+                }
+                None => {
+                    if let Some(header) = &asset.header {
+                        root.push(Action::new("open container", header.clone()));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    root
 }
 
 fn safe_name(raw: &str) -> String {
@@ -207,12 +370,19 @@ async fn asset_streams(
         let _ = std::fs::write(&ppath, &preview.bytes);
     }
     let mut db = app.db.lock().unwrap();
-    if let Some(a) = db.assets.iter_mut().find(|a| a.id == asset.id) {
+    let updated = if let Some(a) = db.assets.iter_mut().find(|a| a.id == asset.id) {
         a.catalogue = Some(inspected.catalogue.clone());
         a.header = Some(inspected.catalogue.headline());
-    }
+        a.actions = actions_for(a);
+        Some(a.clone())
+    } else {
+        None
+    };
     db.save(&app.root).map_err(ApiError::internal)?;
     drop(db);
+    if let Some(a) = updated {
+        let _ = app.asset_bus.send(a);
+    }
 
     Ok(Json(serde_json::json!({
         "id": asset.id,
@@ -688,6 +858,24 @@ async fn events(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Live artifact updates: every artifact is pushed here the moment it has been
+/// processed, so a bulk upload appears in the studio as it happens.
+async fn asset_events(
+    State(app): State<Arc<App>>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let rx = app.asset_bus.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|item| async move {
+        match item {
+            Ok(asset) => {
+                let data = serde_json::to_string(&asset).unwrap_or_default();
+                Some(Ok(Event::default().event("asset").data(data)))
+            }
+            Err(_) => None,
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 pub fn router(app: Arc<App>) -> axum::Router {
     use axum::extract::DefaultBodyLimit;
     use axum::routing::{delete, get, post};
@@ -698,6 +886,7 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/api/engines", get(engines))
         .route("/api/rebuild", post(rebuild))
         .route("/api/events", get(events))
+        .route("/api/assets/events", get(asset_events))
         .route("/api/assets", post(upload_asset))
         .route("/api/assets/{id}", delete(delete_asset))
         .route("/api/assets/{id}/mesh", get(asset_mesh))

@@ -24,6 +24,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ole::{EntryKind, OleFile};
+use crate::propset::{self, PropertySet};
 
 /// Stream names that have been seen in SolidWorks documents, and what they are
 /// believed to hold. Anything not listed is still reported, as `unrecognised`,
@@ -44,6 +45,13 @@ const RECOGNISED: &[(&str, &str)] = &[
 
 /// Large streams are not worth reading to look for a thumbnail.
 const MAX_SNIFF_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Streams larger than this are not scanned for document references; a real
+/// assembly's geometry payload can be hundreds of megabytes.
+const MAX_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Stop after this many references, so a pathological file cannot fill memory.
+const MAX_REFERENCES: usize = 512;
 
 /// What kind of SolidWorks document a file is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +116,14 @@ pub struct PreviewInfo {
     pub bytes: u64,
 }
 
+/// Another document this one points at - an assembly's components, or a
+/// drawing's referenced model - and the stream the name was found in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reference {
+    pub name: String,
+    pub stream: String,
+}
+
 /// Everything we can say about a document without decoding its internals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Catalogue {
@@ -119,6 +135,15 @@ pub struct Catalogue {
     pub streams: Vec<StreamInfo>,
     pub stream_bytes: u64,
     pub preview: Option<PreviewInfo>,
+    /// The document's own parameters, from its OLE property-set streams: the
+    /// `SummaryInformation` and `DocumentSummaryInformation` streams, including
+    /// the custom properties a shop fills in (Material, Mass, Part Number...).
+    #[serde(default)]
+    pub metadata: Vec<PropertySet>,
+    /// Documents this one references, found by reading the text inside its
+    /// streams. For an assembly this is its component list.
+    #[serde(default)]
+    pub references: Vec<Reference>,
     /// Streams whose names are not recognised on their own - the raw material
     /// for working out the feature tree format.
     pub unrecognised: Vec<String>,
@@ -136,6 +161,13 @@ impl Catalogue {
         if let Some(t) = &self.feature_tree_stream {
             s.push_str(&format!(" · feature tree in `{t}`"));
         }
+        let props: usize = self.metadata.iter().map(|m| m.properties.len()).sum();
+        if props > 0 {
+            s.push_str(&format!(" · {props} parameter(s)"));
+        }
+        if !self.references.is_empty() {
+            s.push_str(&format!(" · {} reference(s)", self.references.len()));
+        }
         s
     }
 }
@@ -150,6 +182,62 @@ pub struct Preview {
 pub struct Inspected {
     pub catalogue: Catalogue,
     pub preview: Option<Preview>,
+}
+
+/// Every printable ASCII run of four or more characters in `data`.
+fn printable_runs(data: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for &b in data {
+        if (0x20..=0x7E).contains(&b) {
+            cur.push(b as char);
+        } else {
+            if cur.len() >= 4 {
+                out.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        }
+    }
+    if cur.len() >= 4 {
+        out.push(cur);
+    }
+    out
+}
+
+/// The document-name-looking token around a match, e.g. from
+/// `C:\work\bracket.SLDPRT` the token `bracket.SLDPRT`.
+fn token_ending_at(run: &str, end: usize, len: usize) -> String {
+    let start = run[..end - len]
+        .rfind(|c: char| c == '\\' || c == '/' || c == '"' || c == ' ' || c == ';')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    run[start..end].to_string()
+}
+
+/// Find references to other SolidWorks documents inside one stream.
+fn scan_references(data: &[u8], stream: &str, out: &mut Vec<Reference>, seen: &mut std::collections::HashSet<String>) {
+    for run in printable_runs(data) {
+        let lower = run.to_ascii_lowercase();
+        for ext in [".sldprt", ".sldasm", ".slddrw"] {
+            let mut from = 0;
+            while let Some(rel) = lower[from..].find(ext) {
+                let end = from + rel + ext.len();
+                let name = token_ending_at(&run, end, ext.len());
+                let key = name.to_ascii_lowercase();
+                if !name.is_empty() && seen.insert(key) {
+                    out.push(Reference {
+                        name,
+                        stream: stream.to_string(),
+                    });
+                }
+                from = end;
+                if out.len() >= MAX_REFERENCES {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Recognise an image by its leading bytes.
@@ -182,6 +270,9 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
     let mut feature_tree_stream: Option<String> = None;
     let mut stream_bytes: u64 = 0;
     let mut best_preview: Option<(String, String, Vec<u8>, bool)> = None;
+    let mut metadata: Vec<PropertySet> = Vec::new();
+    let mut references: Vec<Reference> = Vec::new();
+    let mut seen_refs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for entry in ole.entries() {
         if entry.kind != EntryKind::Stream {
@@ -210,6 +301,17 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
         });
         stream_bytes = stream_bytes.saturating_add(entry.size);
 
+        // The two OLE property streams hold the document's real parameters.
+        if let Some(groups) = propset::groups_for(&entry.name) {
+            if let Ok(data) = ole.read(entry) {
+                match propset::parse(&data, groups) {
+                    Ok(sets) => metadata.extend(sets),
+                    Err(e) => tracing::debug!("property stream {} unreadable: {e}", entry.name),
+                }
+            }
+            continue;
+        }
+
         // Look for a thumbnail, but never read a huge stream to do it.
         if entry.size == 0 || entry.size > MAX_SNIFF_BYTES {
             continue;
@@ -227,10 +329,15 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
                 best_preview = Some((
                     entry.name.clone(),
                     content_type.to_string(),
-                    data,
+                    data.clone(),
                     preferred,
                 ));
             }
+        }
+
+        // References to other documents live in the text of the streams.
+        if entry.size <= MAX_SCAN_BYTES && references.len() < MAX_REFERENCES {
+            scan_references(&data, &entry.name, &mut references, &mut seen_refs);
         }
     }
 
@@ -243,12 +350,26 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
     });
 
     let mut notes: Vec<String> = Vec::new();
-    if feature_tree_stream.is_some() {
-        notes.push(
-            "the feature tree stream is listed but not decoded: its encoding is proprietary and decoding it needs a real sample to work against".into(),
-        );
+    let prop_count: usize = metadata.iter().map(|m| m.properties.len()).sum();
+    if let Some(feature_tree) = &feature_tree_stream {
+        notes.push(format!(
+            "the feature tree stream `{feature_tree}` is listed but not decoded: its encoding is proprietary and decoding it needs a real sample to work against"
+        ));
     } else {
         notes.push("no stream named ThirdPv was found; the feature tree may be absent or named differently in this version".into());
+    }
+    if prop_count == 0 {
+        notes.push("no document parameters found (the file has no readable property streams)".into());
+    }
+    if references.is_empty() {
+        if kind == DocKind::Assembly {
+            notes.push("no component references found; an assembly normally lists its parts here".into());
+        }
+    } else {
+        notes.push(format!(
+            "{} referenced document(s) found by reading the streams' text; these are the components (assembly) or models (drawing) this file points at",
+            references.len()
+        ));
     }
     if preview_info.is_none() {
         notes.push("no embedded preview image found".into());
@@ -271,6 +392,8 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
         streams,
         stream_bytes,
         preview: preview_info,
+        metadata,
+        references,
         unrecognised,
         feature_tree_stream,
         notes,
@@ -377,5 +500,62 @@ mod tests {
         assert!(h.contains("SolidWorks part"), "{h}");
         assert!(h.contains("5 stream"), "{h}");
         assert!(h.contains("preview"), "{h}");
+    }
+
+    #[test]
+    fn reads_the_documents_parameters() {
+        let c = inspect(&sample_part(), "sldprt").unwrap().catalogue;
+        // The fixture's property stream is not a real property set, so nothing
+        // is claimed; the note says so rather than inventing values.
+        assert!(c.metadata.is_empty());
+        assert!(c.notes.iter().any(|n| n.contains("no document parameters")));
+    }
+
+    #[test]
+    fn finds_referenced_documents_in_an_assembly() {
+        let payload = b"C:\\work\\plate.SLDPRT\x00C:\\work\\bracket.sldprt\x00other text\x00C:\\work\\sub\\base.SLDASM\x00";
+        let file = build(&[("Contents", payload), ("Preview", b"not an image")]);
+        let c = inspect(&file, "sldasm").unwrap().catalogue;
+        let names: Vec<&str> = c.references.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"plate.SLDPRT"), "{names:?}");
+        assert!(names.contains(&"bracket.sldprt"), "{names:?}");
+        assert!(names.contains(&"base.SLDASM"), "{names:?}");
+        // The same name twice is one reference.
+        assert_eq!(c.references.len(), 3);
+        assert!(c.references.iter().all(|r| r.stream == "Contents"));
+    }
+
+    #[test]
+    fn reads_real_property_streams_when_present() {
+        // A SummaryInformation stream carrying a Title, built to the format.
+        let mut pset = vec![0u8; 48];
+        pset[0..2].copy_from_slice(&0xFFFEu16.to_le_bytes());
+        pset[24..28].copy_from_slice(&1u32.to_le_bytes());
+        pset[44..48].copy_from_slice(&48u32.to_le_bytes());
+        let title: Vec<u16> = "bracket".encode_utf16().chain(std::iter::once(0)).collect();
+        let mut value = 31u32.to_le_bytes().to_vec();
+        value.extend_from_slice(&(title.len() as u32).to_le_bytes());
+        for u in title {
+            value.extend_from_slice(&u.to_le_bytes());
+        }
+        let table_len = 16u32;
+        let mut sec = Vec::new();
+        sec.extend_from_slice(&((table_len as usize + value.len()) as u32).to_le_bytes());
+        sec.extend_from_slice(&1u32.to_le_bytes());
+        sec.extend_from_slice(&2u32.to_le_bytes());
+        sec.extend_from_slice(&table_len.to_le_bytes());
+        sec.extend_from_slice(&value);
+        pset.extend_from_slice(&sec);
+
+        let file = build(&[("\u{5}SummaryInformation", &pset), ("Contents", b"geometry")]);
+        let c = inspect(&file, "sldprt").unwrap().catalogue;
+        let title = c
+            .metadata
+            .iter()
+            .flat_map(|m| &m.properties)
+            .find(|p| p.name == "Title")
+            .map(|p| p.value.clone());
+        assert_eq!(title.as_deref(), Some("bracket"));
+        assert!(c.headline().contains("parameter"), "{}", c.headline());
     }
 }

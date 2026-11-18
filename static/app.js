@@ -345,6 +345,33 @@ function renderProps() {
   }
 
   if (asset.catalogue) renderCatalogue(asset, box);
+  if (asset.actions && asset.actions.length) renderActions(asset, box);
+}
+
+/* The whole path from upload to result, drawn as a tree. It works the same for
+   every kind of artifact, so nothing about how a file was read is hidden. */
+function renderActions(asset, box) {
+  const wrap = el("div", "history");
+  wrap.append(el("h3", null, "How this was processed"));
+  wrap.append(el("p", "hint", "Every stage, from the upload to what was read out of the file."));
+  wrap.append(actionTree(asset.actions));
+  box.append(wrap);
+}
+
+function actionTree(actions) {
+  const ul = el("ul", "action-tree");
+  actions.forEach((a) => {
+    const li = el("li");
+    const head = el("div", "act");
+    head.append(el("span", "op", a.step));
+    const detail = el("span", "detail", a.detail);
+    if (a.children && a.children.length) detail.classList.add("muted");
+    head.append(detail);
+    li.append(head);
+    if (a.children && a.children.length) li.append(actionTree(a.children));
+    ul.append(li);
+  });
+  return ul;
 }
 
 /// A SolidWorks document: what is inside it, and its own preview image.
@@ -362,6 +389,34 @@ function renderCatalogue(asset, box) {
     wrap.append(img);
     wrap.append(el("p", "hint", "Preview embedded in the document (" + c.preview.stream + ", " +
       Math.round(c.preview.bytes / 1024) + " KB)."));
+  }
+
+  // The parameters the file itself carries: author, part number, and the custom
+  // properties a shop fills in (Material, Mass, Revision...).
+  const groups = (c.metadata || []).filter((g) => g.properties.length);
+  if (groups.length) {
+    wrap.append(el("div", "section-label", "Parameters stored in the file"));
+    const dl = el("dl", "params");
+    groups.forEach((g) => {
+      g.properties.forEach((p) => {
+        dl.append(el("dt", null, p.name));
+        dl.append(el("dd", null, p.value));
+      });
+    });
+    wrap.append(dl);
+  }
+
+  // Documents this one points at: an assembly's components, a drawing's model.
+  if (c.references && c.references.length) {
+    wrap.append(el("div", "section-label", "Referenced documents (" + c.references.length + ")"));
+    const ul = el("ul", "refs");
+    c.references.forEach((r) => {
+      const li = el("li");
+      li.append(el("span", null, r.name));
+      li.append(el("span", "from", r.stream));
+      ul.append(li);
+    });
+    wrap.append(ul);
   }
 
   const table = el("table", "streams");
@@ -416,19 +471,72 @@ function renderRebuild(r) {
 
 /* ------------------------------------------------------------------ upload */
 
-async function uploadFiles(files) {
-  for (const file of files) {
-    try {
-      const res = await fetch("/api/assets?name=" + encodeURIComponent(file.name), {
-        method: "POST",
-        headers: { "content-type": "application/octet-stream" },
-        body: file,
-      });
-      if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-    } catch (err) {
-      alert("Upload failed for " + file.name + ": " + err.message);
-    }
+/* Each file in a bulk upload gets a row here, and the row keeps up with what is
+   happening to it: queued, uploading, then done the moment the server has read
+   the file and pushed the artifact back over the asset stream. */
+const UPLOADS = [];
+
+function renderActivity() {
+  const list = $("#activity-list");
+  if (!UPLOADS.length) {
+    list.textContent = "";
+    list.append(el("div", "empty", "No uploads yet."));
+    return;
   }
+  list.textContent = "";
+  UPLOADS.slice(0, 80).forEach((u) => {
+    const row = el("div", "row " + u.status);
+    const col = el("div");
+    col.style.flex = "1";
+    col.style.minWidth = "0";
+    col.append(el("div", "name", u.name));
+    if (u.detail) col.append(el("div", "err", u.detail));
+    row.append(col);
+    row.append(el("span", "status", u.status));
+    list.append(row);
+  });
+}
+
+/* A file the server has just finished reading: flip its row to done. */
+function markUploaded(name) {
+  const u = UPLOADS.find((x) => x.name === name && x.status === "uploading");
+  if (u) {
+    u.status = "done";
+    renderActivity();
+  }
+}
+
+/* Upload a batch, a few at a time, so a large drop does not open a hundred
+   connections at once and the feed stays readable. */
+async function uploadFiles(files) {
+  const queued = [...files].map((f) => ({ name: f.name, file: f, status: "queued", detail: "" }));
+  UPLOADS.unshift(...queued);
+  renderActivity();
+
+  let next = 0;
+  const worker = async () => {
+    while (next < queued.length) {
+      const item = queued[next++];
+      item.status = "uploading";
+      renderActivity();
+      try {
+        const res = await fetch("/api/assets?name=" + encodeURIComponent(item.file.name), {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: item.file,
+        });
+        if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+        item.status = "done";
+        item.detail = "";
+      } catch (err) {
+        item.status = "error";
+        item.detail = err.message;
+      }
+      renderActivity();
+    }
+  };
+  const lanes = Math.min(3, queued.length);
+  await Promise.all(Array.from({ length: lanes }, worker));
   await refresh();
 }
 
@@ -489,6 +597,18 @@ function connectEvents() {
     renderRuns();
     if (!activeRunId || activeRunId === run.id) { activeRunId = run.id; showRun(run); }
   });
+
+  // Artifacts are announced the moment they have been processed, so a bulk
+  // upload fills the list and the feed as it goes.
+  const assets = new EventSource("/api/assets/events");
+  assets.addEventListener("asset", (ev) => {
+    const a = JSON.parse(ev.data);
+    const i = STATE.assets.findIndex((x) => x.id === a.id);
+    if (i >= 0) STATE.assets[i] = a; else STATE.assets.push(a);
+    renderAssets();
+    markUploaded(a.name);
+    if (selectedAssetId === a.id) renderProps();
+  });
 }
 
 /* -------------------------------------------------------------------- wire */
@@ -511,6 +631,7 @@ function wire() {
   }));
   $("#btn-fit").addEventListener("click", fitView);
   $("#btn-grid").addEventListener("click", () => { gridHelper.visible = !gridHelper.visible; });
+  $("#btn-clear-activity").addEventListener("click", () => { UPLOADS.length = 0; renderActivity(); });
 
   $("#btn-model").addEventListener("click", async () => {
     const name = prompt("Name the base model", "qwen-cad-base");
@@ -559,6 +680,7 @@ function wire() {
   initViewport();
   wire();
   connectEvents();
+  renderActivity();
   await renderTrainer();
   await refresh();
   renderProps();

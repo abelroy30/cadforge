@@ -26,6 +26,32 @@ pub enum AssetKind {
     Other,
 }
 
+/// One step in how a document was read or built: a short operation, what it
+/// found, and any sub-steps. Rendered as a tree in the studio, so the whole
+/// path from upload to result is visible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Action {
+    pub step: String,
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<Action>,
+}
+
+impl Action {
+    pub fn new(step: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            step: step.into(),
+            detail: detail.into(),
+            children: Vec::new(),
+        }
+    }
+
+    pub fn with(mut self, children: Vec<Action>) -> Self {
+        self.children = children;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Asset {
     pub id: String,
@@ -50,6 +76,10 @@ pub struct Asset {
     /// embedded preview.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalogue: Option<crate::sldworks::Catalogue>,
+    /// How the artifact was processed, step by step, as a tree the studio draws
+    /// for every kind: uploaded, inspected, and what was found.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
 }
 
 impl Asset {

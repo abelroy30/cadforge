@@ -23,7 +23,6 @@ const FREESECT: u32 = 0xFFFF_FFFF;
 const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
 /// Only written, never needed while reading: the reader does not care *why* a
 /// sector is not part of a chain.
-#[cfg(test)]
 const FATSECT: u32 = 0xFFFF_FFFD;
 const NOSTREAM: u32 = 0xFFFF_FFFF;
 
@@ -419,7 +418,7 @@ impl OleFile {
 
 /// A writer for the same format, so the reader can be tested without a
 /// SolidWorks licence: it lays out a real compound file with the given streams.
-#[cfg(test)]
+/// It is also what the studio's sample documents are built from.
 pub mod fixture {
     use super::*;
 

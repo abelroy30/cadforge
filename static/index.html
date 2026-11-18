@@ -22,11 +22,18 @@
     <section class="card">
       <div class="card-head"><h2>Artifacts</h2>
         <button class="mini" id="btn-upload">Upload</button></div>
-      <p class="hint">STL renders in the viewport. STEP keeps its build history for training.</p>
+      <p class="hint">STL renders in the viewport. STEP keeps its build history. SolidWorks parts, assemblies and drawings are opened for their parameters. Drop a whole folder to upload in bulk.</p>
       <div class="list" id="asset-list"></div>
       <div class="card-foot">
         <button class="mini outline" id="btn-dataset">New dataset from selected</button>
       </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Processing</h2>
+        <button class="mini outline" id="btn-clear-activity">Clear</button></div>
+      <p class="hint">Files are uploaded and read as they arrive, each one processed live.</p>
+      <div class="list activity" id="activity-list"></div>
     </section>
 
     <section class="card">
@@ -58,7 +65,7 @@
       <button class="tool" id="btn-grid">Grid</button>
     </div>
     <div class="vp-readout" id="readout">no part loaded</div>
-    <div class="dropzone" id="dropzone"><div>Drop CAD files, images or video to upload</div></div>
+    <div class="dropzone" id="dropzone"><div>Drop CAD files, images or video to upload — drop many at once</div></div>
   </section>
 
   <aside class="panel right">
