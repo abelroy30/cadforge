@@ -1,0 +1,413 @@
+/* cadforge — studio UI. Plain DOM + three.js, no build step required. */
+const $ = (sel) => document.querySelector(sel);
+
+const STATE = { assets: [], models: [], datasets: [], runs: [] };
+let selectedAssetId = null;
+let activeRunId = null;
+
+/* ---------------------------------------------------------------- viewport */
+
+let renderer, scene, camera, controls, partGroup, gridHelper;
+let viewMode = "shaded";
+let partGeometry = null;
+
+function initViewport() {
+  const host = $("#viewport");
+  const canvas = $("#scene");
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0e13);
+
+  camera = new THREE.PerspectiveCamera(45, 1, 0.05, 10000);
+  camera.position.set(3.2, 2.4, 3.6);
+
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = true;
+
+  scene.add(new THREE.HemisphereLight(0xbdd6ff, 0x161c24, 1.05));
+  const key = new THREE.DirectionalLight(0xffffff, 1.45);
+  key.position.set(5, 7, 6);
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0x8fb4ff, 0.65);
+  rim.position.set(-6, -3, -5);
+  scene.add(rim);
+
+  gridHelper = new THREE.GridHelper(10, 20, 0x2b3644, 0x161d26);
+  scene.add(gridHelper);
+
+  partGroup = new THREE.Group();
+  scene.add(partGroup);
+
+  new ResizeObserver(resizeViewport).observe(host);
+  resizeViewport();
+  renderLoop();
+}
+
+function resizeViewport() {
+  const host = $("#viewport");
+  const w = host.clientWidth || 1;
+  const h = host.clientHeight || 1;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+
+function renderLoop() {
+  requestAnimationFrame(renderLoop);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+function clearPart() {
+  while (partGroup.children.length) {
+    const child = partGroup.children.pop();
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) child.material.dispose();
+  }
+}
+
+function setPart(positions) {
+  clearPart();
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geom.computeVertexNormals();
+  geom.computeBoundingSphere();
+  const c = geom.boundingSphere.center;
+  geom.translate(-c.x, -c.y, -c.z);
+  geom.computeBoundingSphere();
+  partGeometry = geom;
+  buildPart();
+  fitView();
+}
+
+function buildPart() {
+  clearPart();
+  if (!partGeometry) return;
+  if (viewMode === "wire" || viewMode === "both") {
+    const edges = new THREE.EdgesGeometry(partGeometry, 28);
+    partGroup.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x7dd3fc })));
+  }
+  if (viewMode === "shaded" || viewMode === "both") {
+    const solid = new THREE.MeshStandardMaterial({ color: 0x9fb7d0, metalness: 0.55, roughness: 0.42 });
+    partGroup.add(new THREE.Mesh(partGeometry, solid));
+  }
+}
+
+function fitView() {
+  if (!partGeometry || !partGeometry.boundingSphere) return;
+  const r = Math.max(partGeometry.boundingSphere.radius, 0.4);
+  const dist = (r / Math.sin((camera.fov * Math.PI) / 360)) * 1.35;
+  camera.position.set(0.85, 0.62, 1).normalize().multiplyScalar(dist);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+/* --------------------------------------------------------------------- api */
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).error || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+async function refresh() {
+  Object.assign(STATE, await api("/api/state"));
+  renderAssets();
+  renderModels();
+  renderDatasets();
+  renderRuns();
+  renderPickers();
+}
+
+/* ------------------------------------------------------------------ lists */
+
+function section(container, rows, emptyText) {
+  container.textContent = "";
+  if (!rows.length) { container.append(el("div", "empty", emptyText)); return; }
+  rows.forEach((row) => container.append(row));
+}
+
+function renderAssets() {
+  const list = $("#asset-list");
+  const rows = STATE.assets.map((a) => {
+    const row = el("div", "row" + (a.id === selectedAssetId ? " active" : ""));
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.dataset.id = a.id;
+    cb.addEventListener("click", (e) => e.stopPropagation());
+    row.append(cb);
+    row.append(el("span", "name", a.name));
+    row.append(el("span", "kind", a.kind));
+    const x = el("span", "x", "\u00d7");
+    x.title = "Delete";
+    x.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("Delete " + a.name + "?")) return;
+      await api("/api/assets/" + a.id, { method: "DELETE" });
+      if (selectedAssetId === a.id) { selectedAssetId = null; clearPart(); setReadout("no part loaded"); }
+      await refresh();
+    });
+    row.append(x);
+    row.addEventListener("click", () => selectAsset(a.id));
+    return row;
+  });
+  section(list, rows, "No artifacts yet. Upload one.");
+}
+
+function renderModels() {
+  const list = $("#model-list");
+  const rows = STATE.models.map((m) => {
+    const row = el("div", "row");
+    row.append(el("span", "name", m.name));
+    row.append(el("span", "kind", m.kind));
+    return row;
+  });
+  section(list, rows, "No base models registered.");
+}
+
+function renderDatasets() {
+  const list = $("#dataset-list");
+  const rows = STATE.datasets.map((d) => {
+    const row = el("div", "row");
+    row.append(el("span", "name", d.name));
+    row.append(el("span", "kind", d.asset_ids.length + " files"));
+    return row;
+  });
+  section(list, rows, "No datasets yet.");
+}
+
+function renderRuns() {
+  const list = $("#run-list");
+  const rows = STATE.runs.slice().reverse().map((r) => {
+    const row = el("div", "row" + (r.id === activeRunId ? " active" : ""));
+    row.append(el("span", "name", r.name));
+    row.append(el("span", "kind", r.status));
+    row.addEventListener("click", () => { activeRunId = r.id; renderRuns(); showRun(r); });
+    return row;
+  });
+  section(list, rows, "No runs yet.");
+}
+
+function renderPickers() {
+  const ms = $("#sel-model");
+  const ds = $("#sel-dataset");
+  ms.textContent = "";
+  ds.textContent = "";
+  STATE.models.forEach((m) => ms.append(new Option(m.name, m.id)));
+  STATE.datasets.forEach((d) => ds.append(new Option(d.name, d.id)));
+  if (!STATE.models.length) ms.append(new Option("register a model first", ""));
+  if (!STATE.datasets.length) ds.append(new Option("create a dataset first", ""));
+  $("#btn-run").disabled = !(STATE.models.length && STATE.datasets.length);
+}
+
+/* --------------------------------------------------------------- selection */
+
+function setReadout(text) { $("#readout").textContent = text; }
+
+async function selectAsset(id) {
+  selectedAssetId = id;
+  renderAssets();
+  renderProps();
+  const asset = STATE.assets.find((a) => a.id === id);
+  if (!asset) return;
+  if (asset.kind === "mesh") {
+    const mesh = await api("/api/assets/" + id + "/mesh");
+    setPart(mesh.positions);
+    const b = mesh.bbox;
+    setReadout(asset.name + "  ·  " + mesh.triangles.toLocaleString() + " tri  ·  " +
+      (b[3] - b[0]).toFixed(2) + " x " + (b[4] - b[1]).toFixed(2) + " x " + (b[5] - b[2]).toFixed(2));
+  } else if (asset.kind === "step") {
+    clearPart();
+    setReadout(asset.name + "  ·  STEP part, history stored");
+  } else {
+    clearPart();
+    setReadout(asset.name + "  ·  " + asset.kind + " (no geometry to draw)");
+  }
+}
+
+function renderProps() {
+  const box = $("#props");
+  box.textContent = "";
+  const asset = STATE.assets.find((a) => a.id === selectedAssetId);
+  $("#inspector-title").textContent = asset ? asset.name : "Selection";
+  if (!asset) {
+    box.append(el("p", "hint", "Select an artifact in the viewport tree."));
+    return;
+  }
+  const dl = el("dl", "kv");
+  const put = (k, v, pre) => { dl.append(el("dt", null, k)); dl.append(el("dd", pre ? "pre" : null, v)); };
+  put("kind", asset.kind);
+  put("format", "." + asset.ext);
+  put("size", (asset.size / 1024).toFixed(1) + " KB");
+  if (asset.triangles != null) put("triangles", asset.triangles.toLocaleString());
+  if (asset.bbox) put("bounds", asset.bbox.map((n) => n.toFixed(2)).join(", "));
+  if (asset.header) put("history", asset.header, true);
+  put("uploaded", asset.uploaded_at);
+  box.append(dl);
+}
+
+/* ------------------------------------------------------------------ upload */
+
+async function uploadFiles(files) {
+  for (const file of files) {
+    try {
+      const res = await fetch("/api/assets?name=" + encodeURIComponent(file.name), {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: file,
+      });
+      if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    } catch (err) {
+      alert("Upload failed for " + file.name + ": " + err.message);
+    }
+  }
+  await refresh();
+}
+
+/* ------------------------------------------------------------- run console */
+
+function showRun(run) {
+  $("#run-pill").textContent = run.status;
+  $("#run-stage").textContent = run.stage + "  ·  " + Math.round(run.progress * 100) + "%";
+  $("#run-bar").style.width = Math.round(run.progress * 100) + "%";
+  const log = $("#run-log");
+  log.textContent = "";
+  run.log.forEach((line) => {
+    const span = el("div", line.level === "info" ? null : line.level, line.at.slice(11, 19) + "  " + line.message);
+    log.append(span);
+  });
+  log.scrollTop = log.scrollHeight;
+  paintStages(run);
+}
+
+function paintStages(run) {
+  const list = $("#stage-list");
+  const done = new Set();
+  run.log.forEach((l) => {
+    const label = l.message.split(" - ")[0];
+    if (label) done.add(label);
+  });
+  [...list.children].forEach((li) => {
+    li.className = "";
+    if (done.has(li.dataset.label)) li.className = "done";
+    if (li.dataset.label === run.stage) li.className = "now";
+  });
+}
+
+async function renderTrainer() {
+  const info = await api("/api/trainer");
+  $("#trainer-pill").textContent = "trainer: " + info.name;
+  const list = $("#stage-list");
+  list.textContent = "";
+  info.stages.forEach((s) => {
+    const li = el("li", null, s.label);
+    li.dataset.label = s.label;
+    li.title = s.detail;
+    list.append(li);
+  });
+}
+
+/* ------------------------------------------------------------------ events */
+
+function connectEvents() {
+  const pill = $("#conn-pill");
+  const es = new EventSource("/api/events");
+  es.addEventListener("open", () => { pill.dataset.state = "open"; pill.lastChild.textContent = "live"; });
+  es.addEventListener("error", () => { pill.dataset.state = "closed"; pill.lastChild.textContent = "reconnecting"; });
+  es.addEventListener("run", (ev) => {
+    const run = JSON.parse(ev.data);
+    const i = STATE.runs.findIndex((r) => r.id === run.id);
+    if (i >= 0) STATE.runs[i] = run; else STATE.runs.push(run);
+    renderRuns();
+    if (!activeRunId || activeRunId === run.id) { activeRunId = run.id; showRun(run); }
+  });
+}
+
+/* -------------------------------------------------------------------- wire */
+
+function wire() {
+  $("#file-input").addEventListener("change", (e) => { uploadFiles([...e.target.files]); e.target.value = ""; });
+  $("#btn-upload").addEventListener("click", () => $("#file-input").click());
+
+  const dz = $("#dropzone");
+  const vp = $("#viewport");
+  ["dragenter", "dragover"].forEach((t) => vp.addEventListener(t, (e) => { e.preventDefault(); dz.classList.add("on"); }));
+  ["dragleave", "drop"].forEach((t) => vp.addEventListener(t, (e) => { e.preventDefault(); dz.classList.remove("on"); }));
+  vp.addEventListener("drop", (e) => { if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]); });
+
+  document.querySelectorAll(".tool[data-view]").forEach((btn) => btn.addEventListener("click", () => {
+    document.querySelectorAll(".tool[data-view]").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    viewMode = btn.dataset.view;
+    buildPart();
+  }));
+  $("#btn-fit").addEventListener("click", fitView);
+  $("#btn-grid").addEventListener("click", () => { gridHelper.visible = !gridHelper.visible; });
+
+  $("#btn-model").addEventListener("click", async () => {
+    const name = prompt("Name the base model", "qwen-cad-base");
+    if (!name) return;
+    const kind = prompt("Kind: base or custom", "base") || "base";
+    const params = parseInt(prompt("Parameter count, optional", "0") || "0", 10);
+    await api("/api/models", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, kind, params: params || null }),
+    });
+    await refresh();
+  });
+
+  $("#btn-dataset").addEventListener("click", async () => {
+    const picked = [...document.querySelectorAll("#asset-list input:checked")].map((cb) => cb.dataset.id).filter(Boolean);
+    if (!picked.length) { alert("Tick one or more artifacts first."); return; }
+    const name = prompt("Dataset name", "cad-history-v1");
+    if (!name) return;
+    await api("/api/datasets", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, asset_ids: picked }),
+    });
+    await refresh();
+  });
+
+  $("#btn-run").addEventListener("click", async () => {
+    const base_model_id = $("#sel-model").value;
+    const dataset_id = $("#sel-dataset").value;
+    if (!base_model_id || !dataset_id) return;
+    const run = await api("/api/runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ base_model_id, dataset_id }),
+    });
+    activeRunId = run.id;
+    const i = STATE.runs.findIndex((r) => r.id === run.id);
+    if (i >= 0) STATE.runs[i] = run; else STATE.runs.push(run);
+    renderRuns();
+    showRun(run);
+  });
+}
+
+(async function main() {
+  initViewport();
+  wire();
+  connectEvents();
+  await renderTrainer();
+  await refresh();
+  renderProps();
+})().catch((err) => { console.error(err); alert(String(err)); });

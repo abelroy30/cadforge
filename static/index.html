@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>cadforge — CAD + AI studio</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="mark"></span><strong>cadforge</strong><span class="tag">CAD + AI studio</span></div>
+  <div class="topbar-right">
+    <span class="pill" id="trainer-pill">trainer: …</span>
+    <span class="pill" id="conn-pill" data-state="connecting"><i></i><span>connecting</span></span>
+  </div>
+</header>
+
+<main class="workspace">
+
+  <aside class="panel left">
+    <section class="card">
+      <div class="card-head"><h2>Artifacts</h2>
+        <button class="mini" id="btn-upload">Upload</button></div>
+      <p class="hint">STL renders in the viewport. STEP keeps its build history for training.</p>
+      <div class="list" id="asset-list"></div>
+      <div class="card-foot">
+        <button class="mini outline" id="btn-dataset">New dataset from selected</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Base models</h2>
+        <button class="mini" id="btn-model">Register</button></div>
+      <p class="hint">Point the studio at a model to adapt, or declare your own architecture.</p>
+      <div class="list" id="model-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>Datasets</h2>
+      <div class="list" id="dataset-list"></div>
+    </section>
+
+    <section class="card grow">
+      <h2>Runs</h2>
+      <div class="list" id="run-list"></div>
+    </section>
+  </aside>
+
+  <section class="viewport" id="viewport">
+    <canvas id="scene"></canvas>
+    <div class="vp-toolbar">
+      <button class="tool active" data-view="shaded">Shaded</button>
+      <button class="tool" data-view="wire">Wire</button>
+      <button class="tool" data-view="both">Both</button>
+      <span class="sep"></span>
+      <button class="tool" id="btn-fit">Fit</button>
+      <button class="tool" id="btn-grid">Grid</button>
+    </div>
+    <div class="vp-readout" id="readout">no part loaded</div>
+    <div class="dropzone" id="dropzone"><div>Drop CAD files, images or video to upload</div></div>
+  </section>
+
+  <aside class="panel right">
+    <section class="card">
+      <div class="card-head"><h2 id="inspector-title">Selection</h2></div>
+      <div id="props"><p class="hint">Select an artifact in the viewport tree.</p></div>
+    </section>
+
+    <section class="card grow">
+      <div class="card-head"><h2>Training</h2><span class="pill small" id="run-pill">idle</span></div>
+      <div class="run-form">
+        <label>Base model<select id="sel-model"></select></label>
+        <label>Dataset<select id="sel-dataset"></select></label>
+        <button class="primary" id="btn-run">Start training run</button>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress"><div class="bar" id="run-bar"></div></div>
+        <div class="stage" id="run-stage">no run selected</div>
+      </div>
+      <ol class="stages" id="stage-list"></ol>
+      <pre class="console" id="run-log"></pre>
+    </section>
+  </aside>
+
+</main>
+
+<input type="file" id="file-input" multiple hidden />
+
+<script src="/vendor/three.min.js"></script>
+<script src="/vendor/OrbitControls.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
