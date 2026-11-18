@@ -3,10 +3,15 @@
 //! see them in a 3D viewport, and run the training pipeline end to end.
 
 mod api;
+mod freecad;
 mod model;
+mod ops;
 mod pipeline;
+mod score;
+mod solid;
 mod step;
 mod stl;
+mod vec3;
 
 use model::{Db, Run};
 use std::path::PathBuf;
@@ -34,7 +39,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db = Db::load(&opts.data);
     let (bus, _) = broadcast::channel(512);
-    let app = std::sync::Arc::new(App { root: opts.data.clone(), db: Mutex::new(db), bus });
+    let app = std::sync::Arc::new(App {
+        root: opts.data.clone(),
+        db: Mutex::new(db),
+        bus,
+    });
 
     let static_dir = opts.static_dir;
     if !static_dir.is_dir() {
@@ -64,7 +73,10 @@ struct Options {
 
 impl Options {
     fn from_args() -> Self {
-        let mut port = std::env::var("CADFORGE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8787);
+        let mut port = std::env::var("CADFORGE_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(8787);
         let mut data = std::env::var("CADFORGE_DATA").unwrap_or_else(|_| "data".into());
         let mut static_dir = std::env::var("CADFORGE_STATIC").unwrap_or_else(|_| "static".into());
 
@@ -97,6 +109,10 @@ impl Options {
                 _ => i += 1,
             }
         }
-        Self { port, data: data.into(), static_dir: static_dir.into() }
+        Self {
+            port,
+            data: data.into(),
+            static_dir: static_dir.into(),
+        }
     }
 }

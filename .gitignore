@@ -3,3 +3,4 @@
 !data/.gitkeep
 *.log
 .DS_Store
+preview/

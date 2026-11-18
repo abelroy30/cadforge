@@ -15,7 +15,8 @@ const MAX_TRIANGLES: usize = 250_000;
 
 pub fn parse(bytes: &[u8]) -> Result<Mesh, String> {
     let verts = if looks_binary(bytes) {
-        parse_binary(bytes).ok_or_else(|| "binary STL header did not match its length".to_string())?
+        parse_binary(bytes)
+            .ok_or_else(|| "binary STL header did not match its length".to_string())?
     } else {
         parse_ascii(bytes).ok_or_else(|| "no triangles found in ASCII STL".to_string())?
     };
@@ -60,7 +61,9 @@ fn parse_ascii(bytes: &[u8]) -> Option<Vec<f32>> {
             if out.len() / 9 >= MAX_TRIANGLES {
                 break;
             }
-            let mut nums = rest.split_whitespace().filter_map(|t| t.parse::<f32>().ok());
+            let mut nums = rest
+                .split_whitespace()
+                .filter_map(|t| t.parse::<f32>().ok());
             if let (Some(x), Some(y), Some(z)) = (nums.next(), nums.next(), nums.next()) {
                 out.extend_from_slice(&[x, y, z]);
             }

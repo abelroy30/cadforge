@@ -147,6 +147,191 @@ async fn asset_mesh(
     })))
 }
 
+/// Which rebuild engines this machine has.
+async fn engines() -> Json<serde_json::Value> {
+    let freecad = crate::freecad::command();
+    Json(serde_json::json!({
+        "engines": [
+            {
+                "id": "native",
+                "name": "cadforge native",
+                "available": true,
+                "note": "built in: extrudes a profile and drills holes. Cannot fillet."
+            },
+            {
+                "id": "freecad",
+                "name": "FreeCAD",
+                "available": freecad.is_some(),
+                "path": freecad,
+                "note": "emits a FreeCAD macro and runs it; needs freecadcmd on PATH."
+            }
+        ]
+    }))
+}
+
+#[derive(Deserialize)]
+struct RebuildRequest {
+    #[serde(default)]
+    asset_id: Option<String>,
+    #[serde(default)]
+    program: Option<crate::ops::Program>,
+    #[serde(default)]
+    engine: Option<String>,
+}
+
+/// Rebuild a part from an operation program and say how close it came.
+async fn rebuild(
+    State(app): State<Arc<App>>,
+    Json(body): Json<RebuildRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Either we were handed a program, or we read one back out of a stored part.
+    let (program, target) = match (&body.program, &body.asset_id) {
+        (Some(p), _) => (p.clone(), None),
+        (None, Some(id)) => {
+            let (path, _) = asset_path(&app, id)?;
+            let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let analysis = crate::step::analyze(&text).map_err(ApiError::bad_request)?;
+            let file = crate::step::StepFile::parse(&text).map_err(ApiError::bad_request)?;
+            (crate::step::to_program(&file), Some(analysis.triangles))
+        }
+        (None, None) => return Err(ApiError::bad_request("give me an asset_id or a program")),
+    };
+    program.validate().map_err(ApiError::bad_request)?;
+
+    let engine = body.engine.clone().unwrap_or_else(|| "native".into());
+    let mut script = None;
+    let mut ran = true;
+    let mut note;
+    let triangles;
+    let ops_applied;
+
+    match engine.as_str() {
+        "native" => {
+            let r = crate::solid::evaluate(&program).map_err(ApiError::bad_request)?;
+            note = format!("{} face(s) built", r.solid.faces.len());
+            triangles = r.solid.triangulate();
+            ops_applied = r.ops_applied;
+            if !r.warnings.is_empty() {
+                note.push_str("; see warnings");
+            }
+            return Ok(Json(finish(
+                app.as_ref(),
+                program,
+                engine,
+                ran,
+                ops_applied,
+                r.warnings,
+                triangles,
+                target,
+                script,
+                note,
+            )));
+        }
+        "freecad" => {
+            let out_dir = app.root.join("rebuilds");
+            let s = crate::freecad::script(&program, &out_dir).map_err(ApiError::bad_request)?;
+            script = Some(s);
+            if crate::freecad::command().is_none() {
+                ran = false;
+                note = "FreeCAD is not installed here, so the macro was generated but not run. It is returned in `script`.".into();
+                return Ok(Json(finish(
+                    app.as_ref(),
+                    program,
+                    engine,
+                    ran,
+                    0,
+                    Vec::new(),
+                    Vec::new(),
+                    target,
+                    script,
+                    note,
+                )));
+            }
+            let log = crate::freecad::run(&program, &out_dir).map_err(ApiError::bad_request)?;
+            let stl_path = out_dir.join("rebuilt.stl");
+            let bytes = std::fs::read(&stl_path).map_err(|e| {
+                ApiError::internal(format!(
+                    "FreeCAD did not produce {}: {e}",
+                    stl_path.display()
+                ))
+            })?;
+            let mesh = crate::stl::parse(&bytes).map_err(ApiError::internal)?;
+            note = log.trim().to_string();
+            triangles = mesh.positions;
+            ops_applied = program.ops.len();
+            return Ok(Json(finish(
+                app.as_ref(),
+                program,
+                engine,
+                ran,
+                ops_applied,
+                Vec::new(),
+                triangles,
+                target,
+                script,
+                note,
+            )));
+        }
+        other => return Err(ApiError::bad_request(format!("unknown engine {other}"))),
+    }
+}
+
+fn asset_path(app: &App, id: &str) -> Result<(std::path::PathBuf, String), ApiError> {
+    let db = app.db.lock().unwrap();
+    let asset = db.asset(id).ok_or_else(|| ApiError::not_found("asset"))?;
+    Ok((
+        crate::model::assets_dir(&app.root).join(format!("{}.{}", asset.id, asset.ext)),
+        asset.name.clone(),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    _app: &App,
+    program: crate::ops::Program,
+    engine: String,
+    ran: bool,
+    ops_applied: usize,
+    warnings: Vec<String>,
+    triangles: Vec<f32>,
+    target: Option<Vec<f32>>,
+    script: Option<String>,
+    note: String,
+) -> serde_json::Value {
+    let score = match &target {
+        Some(t) if !triangles.is_empty() => crate::score::compare(&triangles, t),
+        _ => None,
+    };
+    let bounds = if triangles.is_empty() {
+        None
+    } else {
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for p in triangles.chunks_exact(3) {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        Some((lo, hi))
+    };
+    let ops = program.op_names();
+    serde_json::json!({
+        "program": program,
+        "ops": ops,
+        "engine": engine,
+        "ran": ran,
+        "ops_applied": ops_applied,
+        "warnings": warnings,
+        "note": note,
+        "script": script,
+        "score": score,
+        "bounds": bounds,
+        "triangles": triangles,
+    })
+}
+
 /// The build history reconstructed from a STEP part, plus a preview to draw.
 async fn asset_history(
     State(app): State<Arc<App>>,
@@ -161,7 +346,8 @@ async fn asset_history(
         )
     };
     let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
-    let analysis = crate::step::analyze(&String::from_utf8_lossy(&bytes)).map_err(ApiError::bad_request)?;
+    let analysis =
+        crate::step::analyze(&String::from_utf8_lossy(&bytes)).map_err(ApiError::bad_request)?;
     let (mode, positions) = if !analysis.triangles.is_empty() {
         ("triangles", analysis.triangles)
     } else if !analysis.points.is_empty() {
@@ -191,7 +377,13 @@ async fn asset_file(
         )
     };
     let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
-    Ok(([("content-disposition", format!("attachment; filename=\"{name}\"")),], bytes))
+    Ok((
+        [(
+            "content-disposition",
+            format!("attachment; filename=\"{name}\""),
+        )],
+        bytes,
+    ))
 }
 
 async fn delete_asset(
@@ -260,7 +452,11 @@ async fn create_dataset(
 ) -> Result<Json<Dataset>, ApiError> {
     let ds = Dataset {
         id: uuid::Uuid::new_v4().to_string(),
-        name: if body.name.trim().is_empty() { "Untitled dataset".into() } else { body.name.trim().to_string() },
+        name: if body.name.trim().is_empty() {
+            "Untitled dataset".into()
+        } else {
+            body.name.trim().to_string()
+        },
         asset_ids: body.asset_ids,
         created_at: now(),
     };
@@ -297,7 +493,11 @@ async fn create_run(
         }
         let run = Run {
             id: uuid::Uuid::new_v4().to_string(),
-            name: if body.name.trim().is_empty() { "Training run".into() } else { body.name.trim().to_string() },
+            name: if body.name.trim().is_empty() {
+                "Training run".into()
+            } else {
+                body.name.trim().to_string()
+            },
             base_model_id: body.base_model_id,
             dataset_id: body.dataset_id,
             status: RunStatus::Queued,
@@ -324,7 +524,11 @@ async fn cancel_run(
     Path(id): Path<String>,
 ) -> Result<Json<Run>, ApiError> {
     let mut db = app.db.lock().unwrap();
-    let run = db.runs.iter_mut().find(|r| r.id == id).ok_or_else(|| ApiError::not_found("run"))?;
+    let run = db
+        .runs
+        .iter_mut()
+        .find(|r| r.id == id)
+        .ok_or_else(|| ApiError::not_found("run"))?;
     if matches!(run.status, RunStatus::Queued | RunStatus::Running) {
         run.status = RunStatus::Cancelled;
         run.stage = "Cancelling".into();
@@ -360,6 +564,8 @@ pub fn router(app: Arc<App>) -> axum::Router {
     axum::Router::new()
         .route("/api/state", get(state))
         .route("/api/trainer", get(trainer))
+        .route("/api/engines", get(engines))
+        .route("/api/rebuild", post(rebuild))
         .route("/api/events", get(events))
         .route("/api/assets", post(upload_asset))
         .route("/api/assets/{id}", delete(delete_asset))
@@ -382,18 +588,31 @@ pub struct ApiError {
 
 impl ApiError {
     fn bad_request(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: msg.into() }
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: msg.into(),
+        }
     }
     fn not_found(what: &str) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: format!("{what} not found") }
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: format!("{what} not found"),
+        }
     }
     fn internal(e: impl std::fmt::Display) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: e.to_string() }
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string(),
+        }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (self.status, Json(serde_json::json!({ "error": self.message }))).into_response()
+        (
+            self.status,
+            Json(serde_json::json!({ "error": self.message })),
+        )
+            .into_response()
     }
 }

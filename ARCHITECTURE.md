@@ -26,6 +26,10 @@ The whole loop is wired end to end, with the modelling intelligence stubbed:
 | STEP (ISO 10303-21) reader: B-rep topology, units, entity graph | working |
 | Feature history read back off the B-rep (extrude, holes, patterns, fillets) | working |
 | STEP preview: planar faces triangulated, holes drawn as sampled strips | working |
+| Operation program (versioned, machine-readable build steps) | working |
+| Rebuild driver: native engine executes a program to geometry | working |
+| FreeCAD engine: emits a macro, runs it where freecadcmd exists | working (untested: no FreeCAD here) |
+| Scoring: symmetric Chamfer distance between a rebuild and a target | working |
 | SolidWorks-native history, B-spline surfaces, real fine-tuning | **not yet** |
 
 ## 2. The loop we are building
@@ -102,7 +106,45 @@ The seven stages are the real workflow, not filler:
   run handed to it as JSON in `$CADFORGE_RUN`; stdout/stderr stream into the run log.
 * Implement the `Trainer` trait in Rust and swap it into `pipeline::execute`.
 
-### 3.5 Geometry and CAD drivers
+### 3.5 The rebuild drivers, and the loop they close
+
+An inferred history is prose; a model needs something it can be trained on and
+scored against. `src/ops.rs` is that contract: a versioned `Program` — a list of
+`extrude`, `hole`, `hole_pattern`, `fillet` operations with real numbers.
+
+```
+STEP file ──step::to_program──► Program ──┬── solid::evaluate (native) ──► triangles ──┐
+                                          │                                           ├─► score::compare
+                                          └── freecad::script/run    ──► triangles ──┘
+```
+
+* `src/solid.rs` — the native engine. It builds the same *surface model* the STEP
+  file carries (outer faces plus hole walls) rather than doing booleans, and it
+  says so when it cannot do something, like a fillet.
+* `src/freecad.rs` — emits a real FreeCAD Python macro for the same program, and
+  runs it when `freecadcmd` is on PATH. This is the engine that can genuinely
+  cut, fillet and export; it is the intended production backend.
+* `src/score.rs` — samples points on both surfaces and takes the mean
+  nearest-neighbour distance in both directions. Symmetric on purpose: leaving a
+  hole out is penalised, and so is inventing material.
+
+The round trip is a test, not a demo: `rebuilds_the_plate_from_its_own_history`
+reads a part, rebuilds it from its own inferred program, and fails if the two
+surfaces drift apart. `a_rebuild_that_loses_the_holes_scores_worse` guards the
+metric itself.
+
+### 3.6 Requirements added later
+
+* **Bulk upload.** Point it at a folder of SolidWorks files, not one at a time.
+* **Categorise parts, assemblies and drawings** — the ask was explicitly via the
+  SolidWorks feature tree.
+* **Learn the build story per file**, and later: given a photo of a part, work out
+  how it was made.
+* **Runs locally on the user's machine.** Nothing may depend on a cloud service.
+* **Deployed to Windows**, browser-based UI.
+* **Pushed to GitHub** and reusable on any computer.
+
+### 3.7 Geometry and CAD drivers
 * **Mesh** (STL, OBJ, 3MF): in-process Rust, `src/stl.rs`. Working.
 * **STEP history** (STEP/STP): `src/step.rs` is a dependency-free ISO 10303-21
   reader - tokenizer, entity graph, topology counts, units - plus an inference
@@ -134,8 +176,22 @@ The seven stages are the real workflow, not filler:
 - Dataset format on disk (features + history + optional renders).
 - Python trainer (LoRA/QLoRA on a small open base, or the user's architecture)
   behind the `CADFORGE_TRAINER` hook, reporting progress back per stage.
-- Evaluation: given only a target mesh, generate steps, rebuild, compare (IoU,
-  Chamfer distance, feature-by-feature match).
+- ~~Evaluation: given a target, rebuild and compare.~~ Done for one route: the
+  operation program is the prediction, the rebuild driver executes it, and
+  `score::compare` measures the result. What is still missing is the model that
+  produces the program in the first place.
+
+**Phase 2.5 — bulk intake, and SolidWorks.** *(new; the user's own priority)*
+- Point the studio at a folder or a zip; upload many files in one go.
+- Classify `.SLDPRT` / `.SLDASM` / `.SLDDRW` by file signature, then by content.
+- Pull the build story out of a native SolidWorks file. Honest position: the
+  feature tree lives in a proprietary stream inside an OLE compound document.
+  Achievable without SolidWorks: document type, custom properties, embedded
+  feature-name strings, timestamps. Full fidelity needs the SolidWorks API —
+  which the user will have, on Windows, where a COM exporter can dump the true
+  feature tree and rebuild order as structured text. That exporter is the
+  highest-value Windows-side work.
+- Keep everything local: no cloud calls, no telemetry, no CDN. Already true.
 
 **Phase 4 — SolidWorks and the wider inputs.**
 - Windows worker running the SolidWorks driver; job queue.
@@ -163,3 +219,14 @@ The seven stages are the real workflow, not filler:
 3. Where does training run: this machine, or a GPU box the studio submits jobs to?
 4. Rebuild target: FreeCAD first (free, scriptable, Linux-friendly) then
    SolidWorks, or SolidWorks first because that is where the history comes from?
+
+## 7. Known issues
+
+* `score::compare` reports a `max_gap` of 7.77 mm on the generated plate even
+  though the chamfer distance is 0.02 mm and every triangle vertex matches
+  exactly. 539 of the 544 surface sample points are identical between target and
+  rebuild; the 5 that differ are triangle *centroids* belonging to different but
+  equivalent triangulations of the same quads. The geometry is therefore right,
+  and the suspicion sits in the sample set or the nearest-neighbour search in
+  `src/score.rs`. Unresolved. It matters because this distance is the training
+  signal - a phantom outlier would teach the model to chase nothing.

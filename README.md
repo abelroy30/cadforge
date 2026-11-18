@@ -8,13 +8,30 @@ The plan lives in `ARCHITECTURE.md`. This file is how to run it.
 
 ## Run it
 
+**Windows:** double-click `run.cmd`. It checks for Rust, starts the studio and
+opens the browser. Nothing else to install.
+
+**macOS / Linux:** `./run.sh` does the same thing.
+
+Or drive it by hand - the whole app is one Rust binary and a `static/` folder:
+
 ```sh
-cargo run                      # http://localhost:8787
-cargo run -- --port 9000       # another port
-cargo run -- --data /tmp/cf    # another storage dir (default: ./data)
+cargo run                       # http://localhost:8787
+cargo run -- --port 9000        # another port
+cargo run -- --data /tmp/cf     # another storage dir (default: ./data)
 ```
 
-Then open http://localhost:8787.
+Then open http://localhost:8787. There is no build step for the web UI, no
+CDN and no network access needed: `static/vendor/` holds three.js.
+
+**Want to see the interface without running anything?**
+`tools/make_preview.py` freezes a running instance into a single self-contained
+HTML file you can open from disk - same CSS, same `app.js`, same data. It is a
+photograph, not the live app.
+
+```sh
+tools/make_preview.py --out preview/cadforge-preview.html
+```
 
 ## Use it
 
@@ -73,6 +90,8 @@ src/stl.rs        STL parser (ASCII + binary)
 src/step.rs       STEP (ISO 10303-21) reader + build-history reconstruction
 static/           the web GUI (plain JS + three.js, no build step)
 tools/make_step.py  generate STEP test parts
+tools/make_preview.py  freeze a running instance into one HTML file
+run.cmd, run.sh   start it and open the browser
 tests/fixtures/   generated parts used by the tests
 ```
 

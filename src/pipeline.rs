@@ -134,7 +134,12 @@ async fn simulated_run(app: Arc<App>, run_id: String) {
             run.status = RunStatus::Running;
         }
     }
-    log(&app, &run_id, "info", format!("trainer `{}` started", trainer.name()));
+    log(
+        &app,
+        &run_id,
+        "info",
+        format!("trainer `{}` started", trainer.name()),
+    );
     commit(&app, &run_id);
 
     let stages = trainer.stages();
@@ -149,7 +154,12 @@ async fn simulated_run(app: Arc<App>, run_id: String) {
         }
         set_stage(&app, &run_id, stage.label, done / total);
         commit(&app, &run_id);
-        log(&app, &run_id, "info", format!("{} - {}", stage.label, stage.detail));
+        log(
+            &app,
+            &run_id,
+            "info",
+            format!("{} - {}", stage.label, stage.detail),
+        );
 
         // A handful of ticks so progress is visibly live, not a jump.
         for tick in 1..=4u32 {
@@ -159,7 +169,12 @@ async fn simulated_run(app: Arc<App>, run_id: String) {
                 commit(&app, &run_id);
                 return;
             }
-            set_stage(&app, &run_id, stage.label, (done + stage.weight * tick as f32 / 4.0) / total);
+            set_stage(
+                &app,
+                &run_id,
+                stage.label,
+                (done + stage.weight * tick as f32 / 4.0) / total,
+            );
             commit(&app, &run_id);
         }
         done += stage.weight;
@@ -192,7 +207,12 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
             run.stage = "External trainer".into();
         }
     }
-    log(&app, &run_id, "info", format!("running external trainer: {cmd}"));
+    log(
+        &app,
+        &run_id,
+        "info",
+        format!("running external trainer: {cmd}"),
+    );
     commit(&app, &run_id);
 
     let child = tokio::process::Command::new("sh")
@@ -206,7 +226,12 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
     let mut child = match child {
         Ok(c) => c,
         Err(e) => {
-            log(&app, &run_id, "error", format!("could not start trainer: {e}"));
+            log(
+                &app,
+                &run_id,
+                "error",
+                format!("could not start trainer: {e}"),
+            );
             finish(&app, &run_id, RunStatus::Failed);
             return;
         }
@@ -228,7 +253,15 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
     }
 
     let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
-    finish(&app, &run_id, if ok { RunStatus::Succeeded } else { RunStatus::Failed });
+    finish(
+        &app,
+        &run_id,
+        if ok {
+            RunStatus::Succeeded
+        } else {
+            RunStatus::Failed
+        },
+    );
 }
 
 fn finish(app: &App, run_id: &str, status: RunStatus) {
@@ -237,10 +270,23 @@ fn finish(app: &App, run_id: &str, status: RunStatus) {
         if let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) {
             run.status = status.clone();
             run.progress = 1.0;
-            run.stage = if status == RunStatus::Succeeded { "Done".into() } else { "Failed".into() };
+            run.stage = if status == RunStatus::Succeeded {
+                "Done".into()
+            } else {
+                "Failed".into()
+            };
             run.finished_at = Some(now());
         }
     }
-    log(&app, run_id, if status == RunStatus::Succeeded { "info" } else { "error" }, "trainer finished");
+    log(
+        &app,
+        run_id,
+        if status == RunStatus::Succeeded {
+            "info"
+        } else {
+            "error"
+        },
+        "trainer finished",
+    );
     commit(app, run_id);
 }

@@ -181,3 +181,11 @@ select {
 }
 .feature-tree .op { display: block; font-weight: 600; font-size: 12px; }
 .feature-tree .detail { display: block; color: var(--muted); font: 11px/1.45 var(--mono); }
+
+/* rebuild result */
+.rebuild { margin-top: 10px; }
+.rebuild h3 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .9px;
+  color: var(--muted); margin: 0 0 6px; font-weight: 600;
+}
+.rebuild .console { max-height: 220px; }

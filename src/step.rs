@@ -130,13 +130,34 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             continue;
         }
         match c {
-            '(' => { out.push(Tok::LParen); i += 1; }
-            ')' => { out.push(Tok::RParen); i += 1; }
-            ',' => { out.push(Tok::Comma); i += 1; }
-            ';' => { out.push(Tok::Semi); i += 1; }
-            '=' => { out.push(Tok::Eq); i += 1; }
-            '$' => { out.push(Tok::Dollar); i += 1; }
-            '*' => { out.push(Tok::Star); i += 1; }
+            '(' => {
+                out.push(Tok::LParen);
+                i += 1;
+            }
+            ')' => {
+                out.push(Tok::RParen);
+                i += 1;
+            }
+            ',' => {
+                out.push(Tok::Comma);
+                i += 1;
+            }
+            ';' => {
+                out.push(Tok::Semi);
+                i += 1;
+            }
+            '=' => {
+                out.push(Tok::Eq);
+                i += 1;
+            }
+            '$' => {
+                out.push(Tok::Dollar);
+                i += 1;
+            }
+            '*' => {
+                out.push(Tok::Star);
+                i += 1;
+            }
             '#' => {
                 i += 1;
                 let start = i;
@@ -225,7 +246,12 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
                     let ch = cs[i];
                     if is_word_char(ch) {
                         i += 1;
-                    } else if ch == '-' && cs.get(i + 1).map(|n| n.is_ascii_alphabetic()).unwrap_or(false) {
+                    } else if ch == '-'
+                        && cs
+                            .get(i + 1)
+                            .map(|n| n.is_ascii_alphabetic())
+                            .unwrap_or(false)
+                    {
                         // END-ISO-10303-21
                         i += 1;
                     } else {
@@ -271,7 +297,10 @@ impl StepFile {
         while i < toks.len() {
             let id = match &toks[i] {
                 Tok::Hash(id) => *id,
-                _ => { i += 1; continue; }
+                _ => {
+                    i += 1;
+                    continue;
+                }
             };
             i += 1;
             if toks.get(i) != Some(&Tok::Eq) {
@@ -322,7 +351,14 @@ fn parse_instance(id: u64, toks: &[Tok], mut i: usize) -> Result<(Entity, usize)
         if toks.get(i) == Some(&Tok::Semi) {
             i += 1;
         }
-        return Ok((Entity { id, name: "COMPLEX".into(), args: parts }, i));
+        return Ok((
+            Entity {
+                id,
+                name: "COMPLEX".into(),
+                args: parts,
+            },
+            i,
+        ));
     }
     let name = match &toks[i] {
         Tok::Word(w) => w.clone(),
@@ -352,8 +388,15 @@ fn parse_args(toks: &[Tok], mut i: usize) -> Result<(Vec<Value>, usize), String>
         i = next;
         match toks.get(i) {
             Some(Tok::Comma) => i += 1,
-            Some(Tok::RParen) => { i += 1; break; }
-            other => return Err(format!("expected ',' or ')' in argument list, found {other:?}")),
+            Some(Tok::RParen) => {
+                i += 1;
+                break;
+            }
+            other => {
+                return Err(format!(
+                    "expected ',' or ')' in argument list, found {other:?}"
+                ))
+            }
         }
     }
     Ok((args, i))
@@ -385,30 +428,7 @@ fn parse_value(toks: &[Tok], i: usize) -> Result<(Value, usize), String> {
 
 /* -------------------------------------------------------------- geometry */
 
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn normalize(a: [f64; 3]) -> [f64; 3] {
-    let m = dot(a, a).sqrt();
-    if m > 1e-9 {
-        [a[0] / m, a[1] / m, a[2] / m]
-    } else {
-        [0.0, 0.0, 1.0]
-    }
-}
+use crate::vec3::{add, cross, dot, normalize, perpendicular, scale, sub};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)] // ref_dir is unused until we reconstruct sketches
@@ -450,7 +470,9 @@ impl StepFile {
 
     /// Ordered points around one loop, following edge orientations.
     fn loop_points(&self, loop_ref: &Value) -> Vec<[f64; 3]> {
-        let Some(lp) = self.deref(Some(loop_ref)) else { return Vec::new() };
+        let Some(lp) = self.deref(Some(loop_ref)) else {
+            return Vec::new();
+        };
         match lp.name.as_str() {
             "POLY_LOOP" => lp
                 .arg(0)
@@ -459,16 +481,22 @@ impl StepFile {
                 .unwrap_or_default(),
             "EDGE_LOOP" => {
                 let mut pts = Vec::new();
-                let Some(edges) = lp.arg(0).and_then(|v| v.as_list()) else { return pts };
+                let Some(edges) = lp.arg(0).and_then(|v| v.as_list()) else {
+                    return pts;
+                };
                 for oe in edges {
-                    let Some(oriented) = self.deref(Some(oe)) else { continue };
+                    let Some(oriented) = self.deref(Some(oe)) else {
+                        continue;
+                    };
                     let forward = oriented
                         .arg(3)
                         .and_then(|v| v.as_enum())
                         .map(|f| f != "F")
                         .unwrap_or(true);
                     // ORIENTED_EDGE(name, edge_start, edge_end, edge_element, orientation)
-                    let Some(curve) = self.deref(oriented.arg(2)) else { continue };
+                    let Some(curve) = self.deref(oriented.arg(2)) else {
+                        continue;
+                    };
                     let (a, b) = (curve.arg(0), curve.arg(1));
                     let pick = if forward { a } else { b };
                     if let Some(p) = self.vertex_point(pick) {
@@ -502,15 +530,16 @@ impl StepFile {
             if out.len() / 9 >= cap {
                 return;
             }
-            let Some(bounds) = face.arg(0).and_then(|v| v.as_list()) else { continue };
+            let Some(bounds) = face.arg(0).and_then(|v| v.as_list()) else {
+                continue;
+            };
             // prefer the outer bound
             let mut chosen: Option<Vec<[f64; 3]>> = None;
             for b in bounds {
-                let Some(be) = self.deref(Some(b)) else { continue };
-                let pts = be
-                    .arg(0)
-                    .map(|l| self.loop_points(l))
-                    .unwrap_or_default();
+                let Some(be) = self.deref(Some(b)) else {
+                    continue;
+                };
+                let pts = be.arg(0).map(|l| self.loop_points(l)).unwrap_or_default();
                 if pts.len() < 3 {
                     continue;
                 }
@@ -559,7 +588,9 @@ impl StepFile {
             if out.len() / 9 >= cap {
                 return;
             }
-            let Some(pl) = self.placement_of(e.arg(0)) else { continue };
+            let Some(pl) = self.placement_of(e.arg(0)) else {
+                continue;
+            };
             let radius = e.arg(1).and_then(|v| v.as_num()).unwrap_or(0.0);
             if radius <= 1e-9 {
                 continue;
@@ -595,7 +626,11 @@ impl StepFile {
             if (t1 - t0).abs() < 1e-9 {
                 continue;
             }
-            let seed = if axis[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+            let seed = if axis[0].abs() < 0.9 {
+                [1.0, 0.0, 0.0]
+            } else {
+                [0.0, 1.0, 0.0]
+            };
             let u = normalize(cross(axis, seed));
             let v = cross(axis, u);
             let origin = pl.origin;
@@ -660,14 +695,20 @@ pub struct Analysis {
 }
 
 fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 fn axis_key(v: [f64; 3]) -> String {
     let mut v = v;
     let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     if mag > 1e-9 {
-        for k in 0..3 { v[k] /= mag; }
+        for k in 0..3 {
+            v[k] /= mag;
+        }
     }
     // Opposite normals describe the same slab; canonicalise the sign so a pair
     // of parallel faces always lands in one group.
@@ -714,7 +755,9 @@ pub fn analyze_file(file: &StepFile) -> Analysis {
 
     let mut points = Vec::new();
     for e in file.named("CARTESIAN_POINT") {
-        if points.len() / 3 >= 20_000 { break; }
+        if points.len() / 3 >= 20_000 {
+            break;
+        }
         if let Some(p) = e.arg(0).and_then(|v| v.as_vec3()) {
             points.push(p[0] as f32);
             points.push(p[1] as f32);
@@ -723,7 +766,11 @@ pub fn analyze_file(file: &StepFile) -> Analysis {
     }
 
     infer(file, &mut summary);
-    Analysis { summary, triangles, points }
+    Analysis {
+        summary,
+        triangles,
+        points,
+    }
 }
 
 /// True when some part of a value - however deeply nested - is `part` carrying
@@ -859,7 +906,9 @@ fn infer(file: &StepFile, summary: &mut Summary) {
     if !cyls.is_empty() {
         let mut pat: BTreeMap<String, Vec<(f64, [f64; 3], [f64; 3])>> = BTreeMap::new();
         for c in &cyls {
-            pat.entry(format!("{}|{:.2}", axis_key(c.2), c.0)).or_default().push(*c);
+            pat.entry(format!("{}|{:.2}", axis_key(c.2), c.0))
+                .or_default()
+                .push(*c);
         }
         for group in pat.values() {
             let (radius, origin, _) = group[0];
@@ -877,7 +926,10 @@ fn infer(file: &StepFile, summary: &mut Summary) {
                     op: "Hole".into(),
                     detail: format!(
                         "diameter {:.2} {unit} through at ({:.2}, {:.2}, {:.2})",
-                        radius * 2.0, origin[0], origin[1], origin[2]
+                        radius * 2.0,
+                        origin[0],
+                        origin[1],
+                        origin[2]
                     ),
                 });
             }
@@ -901,7 +953,10 @@ fn infer(file: &StepFile, summary: &mut Summary) {
     if circles > 0 {
         summary.steps.push(StepLine {
             op: "Sketch".into(),
-            detail: format!("{circles} circular profile{} in the underlying sketches", plural(circles)),
+            detail: format!(
+                "{circles} circular profile{} in the underlying sketches",
+                plural(circles)
+            ),
         });
     }
 
@@ -910,6 +965,122 @@ fn infer(file: &StepFile, summary: &mut Summary) {
             op: "Reconstruct".into(),
             detail: "no buildable features recognised - the file may be a surface model or an unsupported flavour".into(),
         });
+    }
+}
+
+/// Turn the geometry into the machine-readable build program.
+///
+/// The same facts `infer` describes in prose, kept as numbers so a driver can
+/// execute them. Where the prose says "extrude 60.00 mm along (1, 0, 0)", this
+/// says `extrude` with a profile, a distance and a direction.
+pub fn to_program(file: &StepFile) -> crate::ops::Program {
+    use crate::ops::{Op, Profile, Program};
+
+    let mut ops: Vec<Op> = Vec::new();
+
+    let mut pts: Vec<[f64; 3]> = Vec::new();
+    for e in file.named("CARTESIAN_POINT") {
+        if let Some(p) = e.arg(0).and_then(|v| v.as_vec3()) {
+            pts.push(p);
+        }
+    }
+
+    // the extrusion: the parallel-plane group with the largest travel
+    let mut groups: BTreeMap<String, Vec<[f64; 3]>> = BTreeMap::new();
+    for e in file.named("PLANE") {
+        if let Some(pl) = file.placement_of(e.arg(0)) {
+            groups.entry(axis_key(pl.axis)).or_default().push(pl.origin);
+        }
+    }
+    let mut best: Option<([f64; 3], f64, f64)> = None;
+    for (key, origins) in &groups {
+        if origins.len() < 2 {
+            continue;
+        }
+        let n = parse_axis_key(key);
+        let mut dmin = f64::MAX;
+        let mut dmax = f64::MIN;
+        for o in origins {
+            let d = dot(*o, n);
+            dmin = dmin.min(d);
+            dmax = dmax.max(d);
+        }
+        let depth = dmax - dmin;
+        if depth > 1e-6 && best.map(|(_, d, _)| depth > d).unwrap_or(true) {
+            best = Some((n, depth, dmin));
+        }
+    }
+
+    if let Some((n, depth, base)) = best {
+        // The profile is the outline of everything, seen along the pull
+        // direction - a convex hull, so a part with a concave footprint is
+        // approximated. Documented rather than hidden.
+        let u = perpendicular(n);
+        let v = cross(n, u);
+        let flat: Vec<(f64, f64)> = pts.iter().map(|p| (dot(*p, u), dot(*p, v))).collect();
+        let hull = crate::solid::convex_hull_2d(flat);
+        let points: Vec<[f64; 3]> = hull
+            .iter()
+            .map(|(x, y)| add(add(scale(u, *x), scale(v, *y)), scale(n, base)))
+            .collect();
+        if points.len() >= 3 {
+            ops.push(Op::Extrude {
+                profile: Profile::Polygon { points },
+                distance: depth,
+                direction: n,
+            });
+        }
+    }
+
+    // holes, grouped the way `infer` groups them
+    let mut cyls: Vec<(f64, [f64; 3], [f64; 3])> = Vec::new();
+    for e in file.named("CYLINDRICAL_SURFACE") {
+        let radius = e.arg(1).and_then(|v| v.as_num()).unwrap_or(0.0);
+        if let Some(pl) = file.placement_of(e.arg(0)) {
+            cyls.push((radius, pl.origin, pl.axis));
+        }
+    }
+    let mut pat: BTreeMap<String, Vec<(f64, [f64; 3], [f64; 3])>> = BTreeMap::new();
+    for c in &cyls {
+        pat.entry(format!("{}|{:.2}", axis_key(c.2), c.0))
+            .or_default()
+            .push(*c);
+    }
+    for group in pat.values() {
+        let (radius, _, axis) = group[0];
+        let diameter = radius * 2.0;
+        if group.len() >= 2 {
+            ops.push(Op::HolePattern {
+                diameter,
+                through: true,
+                depth: 0.0,
+                positions: group.iter().map(|c| c.1).collect(),
+                axis,
+            });
+        } else {
+            ops.push(Op::Hole {
+                diameter,
+                through: true,
+                depth: 0.0,
+                at: group[0].1,
+                axis,
+            });
+        }
+    }
+
+    if let Some(radius) = file
+        .named("TOROIDAL_SURFACE")
+        .next()
+        .and_then(|e| e.arg(2))
+        .and_then(|v| v.as_num())
+    {
+        ops.push(Op::Fillet { radius });
+    }
+
+    Program {
+        version: crate::ops::VERSION,
+        units: unit_label(file),
+        ops,
     }
 }
 
@@ -952,7 +1123,13 @@ END-ISO-10303-21;
     fn reads_enums_and_refs() {
         let f = StepFile::parse(SAMPLE).unwrap();
         let unit = f.get(1).unwrap();
-        assert_eq!(unit.args.iter().filter(|a| a.as_enum() == Some("MILLI")).count(), 1);
+        assert_eq!(
+            unit.args
+                .iter()
+                .filter(|a| a.as_enum() == Some("MILLI"))
+                .count(),
+            1
+        );
         assert_eq!(f.get(6).unwrap().arg(0).unwrap().as_ref(), Some(5));
     }
 
@@ -1009,8 +1186,11 @@ mod fixture_tests {
     use super::*;
 
     fn fixture(name: &str) -> String {
-        std::fs::read_to_string(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")))
-            .unwrap_or_else(|e| panic!("missing fixture {name}: {e}"))
+        std::fs::read_to_string(format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap_or_else(|e| panic!("missing fixture {name}: {e}"))
     }
 
     #[test]
@@ -1027,7 +1207,10 @@ mod fixture_tests {
         assert_eq!(a.summary.cylindrical_faces, 4);
         assert_eq!(a.summary.unit, "mm");
         assert!(ops.iter().any(|(op, _)| *op == "Extrude"), "steps: {ops:?}");
-        assert!(ops.iter().any(|(op, _)| *op == "Hole pattern"), "steps: {ops:?}");
+        assert!(
+            ops.iter().any(|(op, _)| *op == "Hole pattern"),
+            "steps: {ops:?}"
+        );
         assert!(!a.triangles.is_empty(), "faces should preview as triangles");
         // 6 planar quads fan into 3 triangles each, plus a 32-segment strip per hole.
         assert_eq!(a.triangles.len() / 9, 6 * 3 + 4 * 32 * 2);
@@ -1042,3 +1225,81 @@ mod fixture_tests {
     }
 }
 
+#[cfg(test)]
+mod round_trip_tests {
+    use super::*;
+
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap_or_else(|e| panic!("missing fixture {name}: {e}"))
+    }
+
+    /// The point of the whole exercise: read a part, turn it into an operation
+    /// program, rebuild it, and see whether the rebuilt surfaces land on the
+    /// originals. This is the loop a model has to be measured against.
+    #[test]
+    fn rebuilds_the_plate_from_its_own_history() {
+        let src = fixture("plate.step");
+        let analysis = analyze(&src).unwrap();
+        let file = StepFile::parse(&src).unwrap();
+        let program = to_program(&file);
+
+        assert_eq!(program.op_names(), vec!["extrude", "hole_pattern"]);
+        assert_eq!(program.units, "mm");
+
+        let rebuilt = crate::solid::evaluate(&program).unwrap();
+        assert!(
+            rebuilt.warnings.is_empty(),
+            "warnings: {:?}",
+            rebuilt.warnings
+        );
+        assert_eq!(rebuilt.ops_applied, 2);
+
+        let tris = rebuilt.solid.triangulate();
+        assert!(!tris.is_empty());
+
+        let score = crate::score::compare(&tris, &analysis.triangles).unwrap();
+        assert!(
+            score.chamfer < 0.2,
+            "rebuilt part should sit on the original: chamfer {} max gap {}",
+            score.chamfer,
+            score.max_gap
+        );
+    }
+
+    #[test]
+    fn a_rebuild_that_loses_the_holes_scores_worse() {
+        let src = fixture("plate.step");
+        let analysis = analyze(&src).unwrap();
+        let file = StepFile::parse(&src).unwrap();
+        let mut program = to_program(&file);
+        program.ops.pop(); // drop the hole pattern
+        let rebuilt = crate::solid::evaluate(&program).unwrap();
+        let good =
+            crate::score::compare(&rebuilt.solid.triangulate(), &analysis.triangles).unwrap();
+
+        let whole = crate::solid::evaluate(&to_program(&file)).unwrap();
+        let best = crate::score::compare(&whole.solid.triangulate(), &analysis.triangles).unwrap();
+
+        assert!(
+            good.chamfer > best.chamfer,
+            "dropping the holes must cost: {} vs {}",
+            good.chamfer,
+            best.chamfer
+        );
+    }
+
+    #[test]
+    fn boxes_rebuild_too() {
+        let src = fixture("box.step");
+        let file = StepFile::parse(&src).unwrap();
+        let program = to_program(&file);
+        assert_eq!(program.op_names(), vec!["extrude"]);
+        let rebuilt = crate::solid::evaluate(&program).unwrap();
+        let tris = rebuilt.solid.triangulate();
+        assert_eq!(tris.len() / 9, 6 * 3);
+    }
+}

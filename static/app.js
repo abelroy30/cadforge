@@ -303,7 +303,60 @@ function renderProps() {
       ol.append(li);
     });
     wrap.append(ol);
+
+    const result = el("div", "rebuild");
+    const btn = el("button", "primary", "Rebuild & compare");
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Rebuilding...";
+      try {
+        const r = await api("/api/rebuild", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ asset_id: asset.id, engine: "native" }),
+        });
+        if (r.triangles && r.triangles.length) setPart(r.triangles);
+        renderRebuild(r);
+      } catch (err) {
+        alert("Rebuild failed: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Rebuild & compare";
+      }
+    });
+    wrap.append(el("p", "hint", "Rebuild this part from its own inferred operations, then measure the difference."));
+    wrap.append(btn, result);
     box.append(wrap);
+  }
+}
+
+function renderRebuild(r) {
+  const box = document.querySelector("#props .rebuild");
+  if (!box) return;
+  box.textContent = "";
+  const s = r.score;
+  const dl = el("dl", "kv");
+  const put = (k, v) => { dl.append(el("dt", null, k)); dl.append(el("dd", null, v)); };
+  put("engine", r.engine + (r.ran ? "" : " (not run)"));
+  put("operations", (r.ops || []).join(" + "));
+  put("applied", String(r.ops_applied));
+  if (s) {
+    put("chamfer", s.chamfer.toFixed(4) + " mm");
+    put("max gap", s.max_gap.toFixed(4) + " mm");
+    put("size delta", s.size_delta.map((n) => n.toFixed(3)).join(", "));
+  }
+  box.append(dl);
+  if (r.note) box.append(el("p", "hint", r.note));
+  (r.warnings || []).forEach((w) => box.append(el("p", "hint", w)));
+  if (r.script) {
+    const pre = el("pre", "console");
+    pre.textContent = r.script;
+    box.append(pre);
+  }
+  const readout = document.querySelector("#readout");
+  if (readout) {
+    readout.textContent = "rebuilt with " + r.engine +
+      (s ? "  ·  chamfer " + s.chamfer.toFixed(3) + " mm" : "  ·  not run");
   }
 }
 
