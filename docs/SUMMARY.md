@@ -175,10 +175,12 @@ Stated plainly, because these are the things most likely to break first:
    a queued or running run is using is refused (with the reason), which is
    deliberate: the run would have nothing to record against. There is no endpoint
    to delete a *run* at all, so history accumulates.
-4. **The release workflow is not active.** `.github/workflows/release.yml` cannot
-   be pushed by the current token (it lacks the `workflow` scope), so the Windows
-   CI that would build a downloadable zip is kept as `docs/release-workflow.yml`
-   until it can be added.
+4. **The release workflow is not active.** `.github/workflows/release.yml` is
+   written and committed, but the push is refused: the token here lacks the
+   `workflow` scope, which GitHub requires for that path specifically. It sits in
+   an unpushed local commit, so `origin/master` does not have it. It goes live
+   with one `git push` from a machine that has the scope, or by pasting the same
+   file (`docs/release-workflow.yml`) into the web editor.
 5. **Deleting an artifact does not clean up datasets that reference it.** A
    dataset is a list of ids and keeps the dead id; the manifest skips an asset it
    cannot find rather than failing.
