@@ -32,10 +32,16 @@ use crate::propset::{self, PropertySet};
 const RECOGNISED: &[(&str, &str)] = &[
     ("Preview", "embedded preview image"),
     ("PreviewPNG", "embedded preview image (PNG)"),
-    ("ThirdPv", "feature and parameter tree data (proprietary encoding)"),
+    (
+        "ThirdPv",
+        "feature and parameter tree data (proprietary encoding)",
+    ),
     ("Contents", "the document's geometry and topology payload"),
     ("SwDocContentMgr", "document content manager"),
-    ("SummaryInformation", "OLE summary properties: title, author, dates"),
+    (
+        "SummaryInformation",
+        "OLE summary properties: title, author, dates",
+    ),
     (
         "DocumentSummaryInformation",
         "OLE document properties: company, part number",
@@ -216,7 +222,12 @@ fn token_ending_at(run: &str, end: usize, len: usize) -> String {
 }
 
 /// Find references to other SolidWorks documents inside one stream.
-fn scan_references(data: &[u8], stream: &str, out: &mut Vec<Reference>, seen: &mut std::collections::HashSet<String>) {
+fn scan_references(
+    data: &[u8],
+    stream: &str,
+    out: &mut Vec<Reference>,
+    seen: &mut std::collections::HashSet<String>,
+) {
     for run in printable_runs(data) {
         let lower = run.to_ascii_lowercase();
         for ext in [".sldprt", ".sldasm", ".slddrw"] {
@@ -280,10 +291,7 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
         }
         // OLE's own property streams start with 0x05; match on the readable name.
         let bare = entry.name.trim_start_matches('\u{5}').to_string();
-        let role = RECOGNISED
-            .iter()
-            .find(|(n, _)| *n == bare)
-            .map(|(_, r)| *r);
+        let role = RECOGNISED.iter().find(|(n, _)| *n == bare).map(|(_, r)| *r);
         if role.is_none() {
             unrecognised.push(entry.name.clone());
         }
@@ -322,7 +330,8 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
             let better = match &best_preview {
                 None => true,
                 Some((_, _, prev, was_preferred)) => {
-                    (preferred && !*was_preferred) || (preferred == *was_preferred && data.len() > prev.len())
+                    (preferred && !*was_preferred)
+                        || (preferred == *was_preferred && data.len() > prev.len())
                 }
             };
             if better {
@@ -343,11 +352,13 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
 
     streams.sort_by(|a, b| b.size.cmp(&a.size));
 
-    let preview_info = best_preview.as_ref().map(|(name, ct, data, _)| PreviewInfo {
-        stream: name.clone(),
-        content_type: ct.clone(),
-        bytes: data.len() as u64,
-    });
+    let preview_info = best_preview
+        .as_ref()
+        .map(|(name, ct, data, _)| PreviewInfo {
+            stream: name.clone(),
+            content_type: ct.clone(),
+            bytes: data.len() as u64,
+        });
 
     let mut notes: Vec<String> = Vec::new();
     let prop_count: usize = metadata.iter().map(|m| m.properties.len()).sum();
@@ -359,11 +370,15 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
         notes.push("no stream named ThirdPv was found; the feature tree may be absent or named differently in this version".into());
     }
     if prop_count == 0 {
-        notes.push("no document parameters found (the file has no readable property streams)".into());
+        notes.push(
+            "no document parameters found (the file has no readable property streams)".into(),
+        );
     }
     if references.is_empty() {
         if kind == DocKind::Assembly {
-            notes.push("no component references found; an assembly normally lists its parts here".into());
+            notes.push(
+                "no component references found; an assembly normally lists its parts here".into(),
+            );
         }
     } else {
         notes.push(format!(
@@ -376,7 +391,8 @@ pub fn inspect(bytes: &[u8], ext: &str) -> Result<Inspected, String> {
     }
     if kind == DocKind::Unknown {
         notes.push(
-            "the extension is not one of .SLDPRT/.SLDASM/.SLDDRW, so the document kind is unknown".into(),
+            "the extension is not one of .SLDPRT/.SLDASM/.SLDDRW, so the document kind is unknown"
+                .into(),
         );
     }
 
@@ -472,10 +488,16 @@ mod tests {
 
     #[test]
     fn reports_unrecognised_streams_rather_than_hiding_them() {
-        let file = build(&[("SomeNewStream", b"payload"), ("Contents", &vec![1u8; 5000])]);
+        let file = build(&[
+            ("SomeNewStream", b"payload"),
+            ("Contents", &vec![1u8; 5000]),
+        ]);
         let c = inspect(&file, "sldprt").unwrap().catalogue;
         assert!(c.unrecognised.contains(&"SomeNewStream".to_string()));
-        assert!(c.streams.iter().any(|s| s.name == "SomeNewStream" && !s.recognised));
+        assert!(c
+            .streams
+            .iter()
+            .any(|s| s.name == "SomeNewStream" && !s.recognised));
     }
 
     #[test]
@@ -485,7 +507,10 @@ mod tests {
         assert_eq!(c.kind, DocKind::Assembly);
         assert!(c.preview.is_none());
         assert!(c.notes.iter().any(|n| n.contains("no embedded preview")));
-        assert!(c.notes.iter().any(|n| n.contains("no stream named ThirdPv")));
+        assert!(c
+            .notes
+            .iter()
+            .any(|n| n.contains("no stream named ThirdPv")));
     }
 
     #[test]
@@ -547,7 +572,10 @@ mod tests {
         sec.extend_from_slice(&value);
         pset.extend_from_slice(&sec);
 
-        let file = build(&[("\u{5}SummaryInformation", &pset), ("Contents", b"geometry")]);
+        let file = build(&[
+            ("\u{5}SummaryInformation", &pset),
+            ("Contents", b"geometry"),
+        ]);
         let c = inspect(&file, "sldprt").unwrap().catalogue;
         let title = c
             .metadata

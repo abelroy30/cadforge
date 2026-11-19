@@ -320,7 +320,10 @@ pub fn infer(rgba: &[u8], width: usize, height: usize) -> Result<Inference, Stri
             });
             steps.push(StepLine {
                 op: "Hole".into(),
-                detail: format!("d {d} mm, through all, at ({:.1}, {:.1})", positions[0][0], positions[0][1]),
+                detail: format!(
+                    "d {d} mm, through all, at ({:.1}, {:.1})",
+                    positions[0][0], positions[0][1]
+                ),
             });
         }
         n => {
@@ -415,7 +418,16 @@ mod tests {
         vec![0u8; w * h * 4]
     }
 
-    fn rect(rgba: &mut [u8], w: usize, _h: usize, x0: usize, y0: usize, x1: usize, y1: usize, rgb: [u8; 3]) {
+    fn rect(
+        rgba: &mut [u8],
+        w: usize,
+        _h: usize,
+        x0: usize,
+        y0: usize,
+        x1: usize,
+        y1: usize,
+        rgb: [u8; 3],
+    ) {
         for y in y0..=y1 {
             for x in x0..=x1 {
                 let i = (y * w + x) * 4;
@@ -511,7 +523,11 @@ mod tests {
         let mut px = canvas(w, h);
         rect(&mut px, w, h, 10, 10, 189, 89, [200, 200, 200]);
         let inf = infer(&px, w, h).unwrap();
-        assert!(inf.program.validate().is_ok(), "{:?}", inf.program.validate());
+        assert!(
+            inf.program.validate().is_ok(),
+            "{:?}",
+            inf.program.validate()
+        );
         // ...and the native engine can build it into real geometry.
         let solid = crate::solid::evaluate(&inf.program);
         assert!(solid.is_ok(), "rebuild failed: {:?}", solid.err());

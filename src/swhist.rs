@@ -50,8 +50,8 @@ pub struct Export {
 /// parses but has no features is accepted and yields an empty history, so the
 /// caller can say "this export was empty" rather than "this is corrupt".
 pub fn parse(json: &str) -> Result<Export, String> {
-    let export: Export = serde_json::from_str(json)
-        .map_err(|e| format!("not a feature-tree export: {e}"))?;
+    let export: Export =
+        serde_json::from_str(json).map_err(|e| format!("not a feature-tree export: {e}"))?;
     Ok(export)
 }
 
@@ -162,11 +162,22 @@ mod tests {
         assert!(s.steps[0].detail.contains("Default"));
 
         let ops: Vec<&str> = s.steps[1..].iter().map(|l| l.op.as_str()).collect();
-        assert_eq!(ops, ["Sketch", "Extrude", "Sketch", "Cut", "Fillet", "Draft"]);
+        assert_eq!(
+            ops,
+            ["Sketch", "Extrude", "Sketch", "Cut", "Fillet", "Draft"]
+        );
 
         let extrude = &s.steps[2];
-        assert!(extrude.detail.contains("Boss-Extrude1"), "{}", extrude.detail);
-        assert!(extrude.detail.contains("depth: 12 mm"), "{}", extrude.detail);
+        assert!(
+            extrude.detail.contains("Boss-Extrude1"),
+            "{}",
+            extrude.detail
+        );
+        assert!(
+            extrude.detail.contains("depth: 12 mm"),
+            "{}",
+            extrude.detail
+        );
     }
 
     #[test]

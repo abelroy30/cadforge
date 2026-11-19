@@ -156,7 +156,10 @@ fn composition(app: &App, run: &crate::model::Run) -> String {
     if counts.is_empty() {
         return format!("{} holds no artifacts that are still present", ds.name);
     }
-    let parts: Vec<String> = counts.iter().map(|(lane, n)| format!("{n} {lane}")).collect();
+    let parts: Vec<String> = counts
+        .iter()
+        .map(|(lane, n)| format!("{n} {lane}"))
+        .collect();
     format!("{}: {}", ds.name, parts.join(", "))
 }
 
@@ -207,6 +210,25 @@ async fn simulated_run(app: Arc<App>, run_id: String) {
             if let Some(queue) = queue {
                 let line = composition(&app, &queue);
                 log(&app, &run_id, "info", line);
+                // Say how the pairs split before training starts, so a dataset
+                // with too few held-out examples to score itself is visible up
+                // front rather than discovered in the report afterwards.
+                let described = {
+                    let db = app.db.lock().unwrap();
+                    crate::dataset::manifest(&app.root, &db, &queue.dataset_id).ok()
+                };
+                if let Some(m) = described {
+                    let c = &m["counts"];
+                    log(
+                        &app,
+                        &run_id,
+                        "info",
+                        format!(
+                            "pairs: {} usable of {} picture(s) - {} train, {} held out",
+                            c["with_program"], c["pictures"], c["train"], c["val"]
+                        ),
+                    );
+                }
             }
         }
 
@@ -269,9 +291,17 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
                 &app,
                 &run_id,
                 "info",
-                format!("dataset described for the trainer at {}", dataset_file.display()),
+                format!(
+                    "dataset described for the trainer at {}",
+                    dataset_file.display()
+                ),
             ),
-            Err(e) => log(&app, &run_id, "warn", format!("could not write the dataset: {e}")),
+            Err(e) => log(
+                &app,
+                &run_id,
+                "warn",
+                format!("could not write the dataset: {e}"),
+            ),
         },
         None => log(
             &app,
@@ -280,6 +310,10 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
             "the dataset could not be described for the trainer",
         ),
     }
+    // Everything already in the run directory - the dataset just written, mainly -
+    // so the difference after the trainer exits is exactly what it produced.
+    let before = tree(&out_dir);
+
     {
         let mut db = app.db.lock().unwrap();
         if let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) {
@@ -339,6 +373,39 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
     }
 
     let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
+
+    if ok {
+        // A trainer reports its result by writing it down, so the run has to say
+        // what appeared. Comparing the folder before and after is the only way
+        // that works for any trainer, whatever it chose to call its files.
+        let after = tree(&out_dir);
+        let produced: Vec<String> = after
+            .iter()
+            .filter(|&(name, size)| before.get(name) != Some(size))
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        if produced.is_empty() {
+            log(
+                &app,
+                &run_id,
+                "warn",
+                format!(
+                    "the trainer wrote nothing into {} - a checkpoint would normally land there",
+                    out_dir.display()
+                ),
+            );
+        } else {
+            for name in &produced {
+                log(&app, &run_id, "info", format!("trainer wrote {name}"));
+            }
+            let mut db = app.db.lock().unwrap();
+            if let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) {
+                run.outputs.extend(produced.iter().cloned());
+            }
+        }
+    }
+
     finish(
         &app,
         &run_id,
@@ -348,6 +415,37 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
             RunStatus::Failed
         },
     );
+}
+
+/// Every file under a directory, as path relative to it -> size. Telling what a
+/// trainer produced means comparing this before and after it runs.
+fn tree(root: &std::path::Path) -> std::collections::BTreeMap<String, u64> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let meta = match entry.metadata() {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+            if meta.is_dir() {
+                stack.push(path);
+            } else {
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(name, meta.len());
+            }
+        }
+    }
+    out
 }
 
 fn finish(app: &App, run_id: &str, status: RunStatus) {
@@ -396,17 +494,9 @@ mod tests {
         })
     }
 
-    /// A run used to stop dead between stages: the "Register dataset" stage
-    /// described the dataset while still holding the db lock, and describing it
-    /// takes that same lock again. The task did not fail - it froze, taking
-    /// every request with it - so this test asserts the run gets all the way to
-    /// the end rather than merely not erroring.
-    #[tokio::test]
-    async fn a_run_finishes_and_says_what_the_dataset_is_made_of() {
-        let dir = std::env::temp_dir().join(format!("cadforge-run-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let app = app(&dir);
-
+    /// A model, a dataset and a queued run over a data directory the test owns,
+    /// so a test can drive the pipeline without an HTTP client.
+    fn seed(app: &Arc<App>) {
         let (ext, kind) = crate::model::classify("plate.step");
         let lane = crate::model::lane_for(&ext, &kind).to_string();
         let asset = crate::model::Asset {
@@ -424,37 +514,90 @@ mod tests {
             catalogue: None,
             actions: Vec::new(),
         };
-        {
-            let mut db = app.db.lock().unwrap();
-            db.assets.push(asset);
-            db.models.push(BaseModel {
-                id: "m1".into(),
-                name: "small".into(),
-                kind: "base".into(),
-                params: Some(1_000),
-                notes: String::new(),
-                created_at: crate::model::now(),
-            });
-            db.datasets.push(Dataset {
-                id: "d1".into(),
-                name: "shop".into(),
-                asset_ids: vec!["a1".into()],
-                created_at: crate::model::now(),
-            });
-            db.runs.push(Run {
-                id: "r1".into(),
-                name: "run".into(),
-                base_model_id: "m1".into(),
-                dataset_id: "d1".into(),
-                status: RunStatus::Queued,
-                stage: "Queued".into(),
-                progress: 0.0,
-                log: Vec::new(),
-                created_at: crate::model::now(),
-                finished_at: None,
-                outputs: Vec::new(),
-            });
-        }
+
+        let mut db = app.db.lock().unwrap();
+        db.assets.push(asset);
+        db.models.push(BaseModel {
+            id: "m1".into(),
+            name: "small".into(),
+            kind: "base".into(),
+            params: Some(1_000),
+            notes: String::new(),
+            created_at: crate::model::now(),
+        });
+        db.datasets.push(Dataset {
+            id: "d1".into(),
+            name: "shop".into(),
+            asset_ids: vec!["a1".into()],
+            created_at: crate::model::now(),
+        });
+        db.runs.push(Run {
+            id: "r1".into(),
+            name: "run".into(),
+            base_model_id: "m1".into(),
+            dataset_id: "d1".into(),
+            status: RunStatus::Queued,
+            stage: "Queued".into(),
+            progress: 0.0,
+            log: Vec::new(),
+            created_at: crate::model::now(),
+            finished_at: None,
+            outputs: Vec::new(),
+        });
+    }
+
+    /// A real trainer reports its result by leaving a file where the studio told
+    /// it to. This path used to stream the trainer's output and then never look
+    /// at the folder again, so a finished run listed no outputs and the adapter
+    /// it had just written was invisible in the studio.
+    #[tokio::test]
+    async fn an_external_trainer_output_is_reported_by_the_run() {
+        let dir = std::env::temp_dir().join(format!("cadforge-out-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = app(&dir);
+        seed(&app);
+
+        // A stand-in for a real trainer: it writes one file and nothing else.
+        // Spelled for the shell the pipeline will use on this platform.
+        let cmd = if cfg!(windows) {
+            r#"type nul > "%CADFORGE_OUT%\report.json""#
+        } else {
+            r#"touch "$CADFORGE_OUT/report.json""#
+        };
+
+        let finished = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            external_run(app.clone(), "r1".into(), cmd.to_string()),
+        )
+        .await;
+        assert!(finished.is_ok(), "the external run never finished");
+
+        let db = app.db.lock().unwrap();
+        let run = db.runs.iter().find(|r| r.id == "r1").unwrap();
+        let messages: Vec<&str> = run.log.iter().map(|l| l.message.as_str()).collect();
+        assert_eq!(run.status, RunStatus::Succeeded, "log: {messages:?}");
+        assert!(
+            run.outputs.iter().any(|o| o.ends_with("report.json")),
+            "a file the trainer wrote must be reported as an output, got {:?} (log: {messages:?})",
+            run.outputs
+        );
+        drop(db);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run used to stop dead between stages: the "Register dataset" stage
+    /// described the dataset while still holding the db lock, and describing it
+    /// takes that same lock again. The task did not fail - it froze, taking
+    /// every request with it - so this test asserts the run gets all the way to
+    /// the end rather than merely not erroring.
+    #[tokio::test]
+    async fn a_run_finishes_and_says_what_the_dataset_is_made_of() {
+        let dir = std::env::temp_dir().join(format!("cadforge-run-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = app(&dir);
+
+        seed(&app);
 
         let finished = tokio::time::timeout(
             std::time::Duration::from_secs(30),
@@ -471,6 +614,10 @@ mod tests {
         assert!(
             messages.iter().any(|m| m.starts_with("shop:")),
             "the run should say what the dataset holds, got {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.starts_with("pairs:")),
+            "the run should say how the pairs split, got {messages:?}"
         );
         assert!(
             messages.iter().any(|m| m.contains("run complete")),

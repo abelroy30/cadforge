@@ -31,8 +31,7 @@ pub fn looks_like_ole(bytes: &[u8]) -> bool {
 }
 
 fn u16_at(b: &[u8], o: usize) -> Option<u16> {
-    b.get(o..o + 2)
-        .map(|s| u16::from_le_bytes([s[0], s[1]]))
+    b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
 }
 
 fn u32_at(b: &[u8], o: usize) -> Option<u32> {
@@ -294,9 +293,7 @@ impl OleFile {
             if e.kind == EntryKind::Free {
                 continue;
             }
-            let path = paths[id]
-                .clone()
-                .unwrap_or_else(|| format!("/{}", e.name));
+            let path = paths[id].clone().unwrap_or_else(|| format!("/{}", e.name));
             out.push(Entry {
                 id,
                 name: e.name.clone(),
@@ -556,7 +553,15 @@ pub mod fixture {
             put_u32(e, 0x44, NOSTREAM);
             put_u32(e, 0x48, NOSTREAM);
             put_u32(e, 0x4C, if n > 0 { 1 } else { NOSTREAM });
-            put_u32(e, 0x74, if n_mini > 0 { mini_start as u32 } else { ENDOFCHAIN });
+            put_u32(
+                e,
+                0x74,
+                if n_mini > 0 {
+                    mini_start as u32
+                } else {
+                    ENDOFCHAIN
+                },
+            );
             put_u32(e, 0x78, mini_padded.len() as u32);
         }
         for (i, (name, data)) in streams.iter().enumerate() {
@@ -573,7 +578,11 @@ pub mod fixture {
             };
             put_u32(e, 0x48, right);
             put_u32(e, 0x4C, NOSTREAM);
-            let start = if is_mini[i] { mini_starts[i] } else { regular_starts[i] };
+            let start = if is_mini[i] {
+                mini_starts[i]
+            } else {
+                regular_starts[i]
+            };
             put_u32(e, 0x74, start);
             put_u32(e, 0x78, data.len() as u32);
         }
@@ -603,7 +612,11 @@ pub mod fixture {
         put_u32(
             &mut out,
             0x3C,
-            if n_minifat > 0 { minifat_start as u32 } else { ENDOFCHAIN },
+            if n_minifat > 0 {
+                minifat_start as u32
+            } else {
+                ENDOFCHAIN
+            },
         );
         put_u32(&mut out, 0x40, n_minifat as u32);
         put_u32(&mut out, 0x44, ENDOFCHAIN);

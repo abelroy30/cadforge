@@ -87,6 +87,7 @@ def usable_pairs(manifest, data_root):
                 "image": str(image),
                 "target": json.dumps(program, separators=(",", ":")),
                 "name": pair.get("image_name", image.name),
+                "split": pair.get("split", "train"),
             }
         )
     if skipped_no_program:
@@ -157,11 +158,20 @@ def main():
         )
     log(f"training on {len(pairs)} pair(s)")
 
-    # A small held-out slice, so the report can say whether it actually learned.
-    split = max(1, len(pairs) // 20)
-    eval_pairs = pairs[:split]
-    train_pairs = pairs[split:] or pairs
-    log(f"split: {len(train_pairs)} train, {len(eval_pairs)} held out")
+    # The split comes from the manifest, where it is a hash of each picture's id.
+    # Taking it from there, rather than slicing the list, is what makes the
+    # held-out score mean something: the same part is on the same side every run,
+    # so the number can be compared between runs instead of moving with the order
+    # the files happened to be listed in.
+    train_pairs = [p for p in pairs if p.get("split") != "val"]
+    eval_pairs = [p for p in pairs if p.get("split") == "val"]
+    if not train_pairs:
+        # Only reachable if every picture hashed onto the held-out side.
+        train_pairs, eval_pairs = pairs, []
+    log(
+        f"split: {len(train_pairs)} train, {len(eval_pairs)} held out "
+        "(the sides come from the manifest)"
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -271,6 +281,22 @@ def main():
     log("training...")
     trainer.train()
 
+    # Score the held-out pairs. Without this the report says what was fed in, not
+    # whether anything was learned - a falling training loss and a flat held-out
+    # loss is memorisation, and that is the difference worth knowing.
+    eval_loss = None
+    if eval_pairs:
+        log("scoring the held-out pairs...")
+        try:
+            metrics = trainer.evaluate()
+            eval_loss = metrics.get("eval_loss")
+            if eval_loss is not None:
+                log(f"held-out loss: {eval_loss:.4f}")
+        except Exception as exc:  # noqa: BLE001 - a report, not a failure
+            log(f"warning: could not score the held-out pairs ({exc})")
+    else:
+        log("warning: no held-out pairs, so this run has no honest score")
+
     adapter_dir = out_dir / "adapter"
     model.save_pretrained(str(adapter_dir))
     processor.save_pretrained(str(adapter_dir))
@@ -282,6 +308,7 @@ def main():
         "pairs": len(pairs),
         "train": len(train_pairs),
         "held_out": len(eval_pairs),
+        "held_out_loss": eval_loss,
         "epochs": epochs,
         "learning_rate": learning_rate,
         "lora_r": lora_r,

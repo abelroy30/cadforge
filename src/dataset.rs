@@ -54,6 +54,26 @@ fn is_picture(asset: &Asset) -> bool {
     asset.lane == "image" || asset.lane == "view" || asset.kind == AssetKind::Image
 }
 
+/// Which side of the train/eval split a picture falls on.
+///
+/// The side is a hash of the artifact id, not its position in the list. That is
+/// the difference between a split and a shuffle: the same picture lands on the
+/// same side every time the manifest is built, so exporting the dataset again
+/// cannot quietly move a part from train into eval and let the model be scored
+/// on something it has already memorised.
+fn split_of(id: &str, val_pct: u32) -> &'static str {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in id.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    if hash % 100 < val_pct {
+        "val"
+    } else {
+        "train"
+    }
+}
+
 /// One training example: a picture, and what to build to make what it shows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pair {
@@ -71,6 +91,9 @@ pub struct Pair {
     pub program: Option<crate::ops::Program>,
     /// How the program was obtained, so a trainer can filter by trustworthiness.
     pub target: String,
+    /// `train` or `val`. Fixed by the picture's id, so a re-export keeps a part
+    /// on the side it was already on.
+    pub split: String,
 }
 
 /// Build the manifest for a dataset: every picture paired with its document.
@@ -93,6 +116,14 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
     let mut pairs: Vec<Pair> = Vec::new();
     let mut unpaired: Vec<String> = Vec::new();
 
+    // 10% held out by default. The env var is here so a small dataset can push
+    // the held-out share up without editing code.
+    let val_pct = std::env::var("CADFORGE_VAL_PCT")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(10)
+        .clamp(5, 50);
+
     for picture in members.iter().filter(|a| is_picture(a)) {
         let base = base_name(&picture.name);
         let source = members
@@ -103,7 +134,11 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
         let (steps, program, target, source_name, source_id) = match source {
             Some(doc) => {
                 let (program, target) = target_for(dir, doc);
-                let steps = doc.step.as_ref().map(|s| s.steps.clone()).unwrap_or_default();
+                let steps = doc
+                    .step
+                    .as_ref()
+                    .map(|s| s.steps.clone())
+                    .unwrap_or_default();
                 (
                     steps,
                     program,
@@ -124,6 +159,7 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
             steps,
             program,
             target,
+            split: split_of(&picture.id, val_pct).to_string(),
         });
     }
 
@@ -138,6 +174,14 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
     }
 
     let usable = pairs.iter().filter(|p| p.program.is_some()).count();
+    let training = pairs
+        .iter()
+        .filter(|p| p.program.is_some() && p.split == "train")
+        .count();
+    let held_out = pairs
+        .iter()
+        .filter(|p| p.program.is_some() && p.split == "val")
+        .count();
 
     Ok(serde_json::json!({
         "dataset": dataset.name,
@@ -147,6 +191,8 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
         "counts": {
             "pictures": pairs.len(),
             "with_program": usable,
+            "train": training,
+            "val": held_out,
             "pictures_without_a_document": pairs.iter().filter(|p| p.source.is_none()).count(),
             "documents_without_a_picture": unpaired.len(),
         },
@@ -157,6 +203,9 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
             "Only STEP documents yield a program here: their operations are reconstructed \
              from the geometry. A SolidWorks document carries its parameters, but its \
              feature tree is not decoded - export it from SolidWorks to train on it.",
+            "`split` is `train` or `val`, decided by a hash of the picture's id: the same \
+             picture always lands on the same side, so re-exporting cannot leak a part \
+             from train into eval.",
         ],
     }))
 }
@@ -179,7 +228,10 @@ fn target_for(dir: &Path, doc: &Asset) -> (Option<crate::ops::Program>, String) 
     };
     let text = String::from_utf8_lossy(&bytes);
     match crate::step::StepFile::parse(&text) {
-        Ok(file) => (Some(crate::step::to_program(&file)), "reconstructed_from_geometry".to_string()),
+        Ok(file) => (
+            Some(crate::step::to_program(&file)),
+            "reconstructed_from_geometry".to_string(),
+        ),
         Err(_) => (None, "unreadable".to_string()),
     }
 }
@@ -187,7 +239,7 @@ fn target_for(dir: &Path, doc: &Asset) -> (Option<crate::ops::Program>, String) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Dataset, AssetKind};
+    use crate::model::{AssetKind, Dataset};
 
     fn asset(id: &str, name: &str, kind: AssetKind, lane: &str) -> Asset {
         Asset {
@@ -225,9 +277,12 @@ mod tests {
         let mut doc = asset("d1", "bracket.SLDPRT", AssetKind::SwPart, "sldworks");
         doc.step = Some(crate::step::Summary::default());
         db.assets.push(doc);
-        db.assets.push(asset("p1", "bracket-front.png", AssetKind::Image, "view"));
-        db.assets.push(asset("p2", "bracket-iso.png", AssetKind::Image, "view"));
-        db.assets.push(asset("p3", "lonely.png", AssetKind::Image, "image"));
+        db.assets
+            .push(asset("p1", "bracket-front.png", AssetKind::Image, "view"));
+        db.assets
+            .push(asset("p2", "bracket-iso.png", AssetKind::Image, "view"));
+        db.assets
+            .push(asset("p3", "lonely.png", AssetKind::Image, "image"));
         db.datasets.push(Dataset {
             id: "ds1".into(),
             name: "brackets".into(),
@@ -242,7 +297,10 @@ mod tests {
         let paired = pairs.iter().filter(|p| !p["source"].is_null()).count();
         assert_eq!(paired, 2, "{pairs:?}");
         // A SolidWorks part yields no program, and the manifest says why.
-        let first = pairs.iter().find(|p| p["image_name"] == "bracket-front.png").unwrap();
+        let first = pairs
+            .iter()
+            .find(|p| p["image_name"] == "bracket-front.png")
+            .unwrap();
         assert_eq!(first["target"], "parameters_only");
         assert!(first["program"].is_null());
         assert_eq!(first["source_id"], "d1");
@@ -251,7 +309,8 @@ mod tests {
     #[test]
     fn documents_with_no_picture_are_reported_not_dropped() {
         let mut db = Db::default();
-        db.assets.push(asset("d1", "lonely.SLDPRT", AssetKind::SwPart, "sldworks"));
+        db.assets
+            .push(asset("d1", "lonely.SLDPRT", AssetKind::SwPart, "sldworks"));
         db.datasets.push(Dataset {
             id: "ds1".into(),
             name: "x".into(),
@@ -267,5 +326,78 @@ mod tests {
     fn an_unknown_dataset_is_an_error_not_an_empty_manifest() {
         let db = Db::default();
         assert!(manifest(Path::new("/nonexistent"), &db, "nope").is_err());
+    }
+
+    #[test]
+    fn the_split_follows_the_picture_not_its_position() {
+        // Ten pictures and no documents: what is under test is the split itself,
+        // not the pairing. The counts of train/val only cover pairs that carry a
+        // program, so asserting on the pairs is the honest check here.
+        let mut db = Db::default();
+        let ids = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+        for id in ids {
+            db.assets
+                .push(asset(id, &format!("{id}.png"), AssetKind::Image, "view"));
+        }
+        let make = |order: &[&str]| Dataset {
+            id: "ds1".into(),
+            name: "x".into(),
+            asset_ids: order.iter().map(|s| (*s).to_string()).collect(),
+            created_at: String::new(),
+        };
+        db.datasets.push(make(&ids));
+
+        let sides = |m: &serde_json::Value| -> Vec<(String, String)> {
+            let mut out: Vec<(String, String)> = m["pairs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| {
+                    (
+                        p["image_id"].as_str().unwrap().to_string(),
+                        p["split"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect();
+            out.sort();
+            out
+        };
+
+        let first = sides(&manifest(Path::new("/nonexistent"), &db, "ds1").unwrap());
+
+        // Export the same dataset again with the members listed in reverse order.
+        // The side a picture lands on is a hash of its id, so it must not move.
+        let mut reversed: Vec<&str> = ids.to_vec();
+        reversed.reverse();
+        db.datasets[0] = make(&reversed);
+        let second = sides(&manifest(Path::new("/nonexistent"), &db, "ds1").unwrap());
+
+        assert_eq!(first, second, "a side must not move when the order changes");
+        assert_eq!(first.len(), 10);
+        assert!(
+            first.iter().all(|(_, s)| s == "train" || s == "val"),
+            "{first:?}"
+        );
+
+        // The counts always carry both keys, so a trainer can read them blindly.
+        let m = manifest(Path::new("/nonexistent"), &db, "ds1").unwrap();
+        assert!(m["counts"]["train"].is_u64() && m["counts"]["val"].is_u64());
+    }
+
+    #[test]
+    fn the_split_actually_holds_pictures_back() {
+        // A hash that always answered "train" would satisfy every other check in
+        // this file while quietly meaning nothing was ever held out to evaluate
+        // on - the failure that looks most like success. So: count the held-back
+        // side over enough ids to see the rate, with wide slack so it cannot
+        // flake on an unlucky draw.
+        let held = (0..2000)
+            .map(|i| format!("picture-{i}"))
+            .filter(|id| split_of(id, 10) == "val")
+            .count();
+        assert!(
+            (120..=300).contains(&held),
+            "a 10% split held back {held} of 2000 pictures, which is not a working split"
+        );
     }
 }

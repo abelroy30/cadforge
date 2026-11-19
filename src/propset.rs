@@ -157,17 +157,17 @@ fn read_value(data: &[u8], at: usize, codepage: u16) -> Option<String> {
     }
 
     let text = match vt {
-        0 => String::new(), // VT_EMPTY
-        1 => String::new(), // VT_NULL
-        2 => u16_at(data, v).map(|n| (n as i16).to_string())?, // VT_I2
-        3 | 22 => u32_at(data, v).map(|n| (n as i32).to_string())?, // VT_I4/VT_INT
+        0 => String::new(),                                           // VT_EMPTY
+        1 => String::new(),                                           // VT_NULL
+        2 => u16_at(data, v).map(|n| (n as i16).to_string())?,        // VT_I2
+        3 | 22 => u32_at(data, v).map(|n| (n as i32).to_string())?,   // VT_I4/VT_INT
         4 => u32_at(data, v).map(|n| f32::from_bits(n).to_string())?, // VT_R4
         5 => u64_at(data, v).map(|n| f64::from_bits(n).to_string())?, // VT_R8
         11 => {
             let n = u16_at(data, v)?;
             (n != 0).to_string()
         } // VT_BOOL
-        19 => u32_at(data, v).map(|n| n.to_string())?, // VT_UI4
+        19 => u32_at(data, v).map(|n| n.to_string())?,                // VT_UI4
         30 => {
             // VT_LPSTR: length includes the trailing null.
             let len = u32_at(data, v)? as usize;
@@ -192,7 +192,7 @@ fn read_value(data: &[u8], at: usize, codepage: u16) -> Option<String> {
                 g[3], g[2], g[1], g[0], g[5], g[4], g[7], g[6], g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]
             )
         } // VT_CLSID
-        _ => format!("<type {vt}>")
+        _ => format!("<type {vt}>"),
     };
     Some(text)
 }
@@ -206,13 +206,17 @@ fn read_dictionary(data: &[u8], at: usize, codepage: u16) -> Vec<(u32, String)> 
     let mut p = at + 4;
     for _ in 0..count.min(4096) {
         let Some(id) = u32_at(data, p) else { break };
-        let Some(len) = u32_at(data, p + 4) else { break };
+        let Some(len) = u32_at(data, p + 4) else {
+            break;
+        };
         let len = len as usize;
         let start = p + 8;
         // The name is `len` characters; when the codepage is 1200 that is
         // two bytes each, otherwise one.
         let bytes = len * if codepage == 1200 { 2 } else { 1 };
-        let Some(chunk) = data.get(start..start + bytes) else { break };
+        let Some(chunk) = data.get(start..start + bytes) else {
+            break;
+        };
         out.push((id, decode(chunk, codepage)));
         p = start + bytes;
         // Strings are padded to a 4-byte boundary.
@@ -281,7 +285,9 @@ fn read_section(data: &[u8], off: usize, group: &str) -> Vec<Property> {
             standard_name(group, id).map(|s| s.to_string())
         };
         let Some(name) = name else { continue };
-        let Some(value) = read_value(data, at, codepage) else { continue };
+        let Some(value) = read_value(data, at, codepage) else {
+            continue;
+        };
         if value.is_empty() {
             continue;
         }
@@ -434,7 +440,13 @@ mod tests {
         let sets = parse(&s, &["summary"]).unwrap();
         assert_eq!(sets.len(), 1);
         assert_eq!(sets[0].group, "summary");
-        let get = |n: &str| sets[0].properties.iter().find(|p| p.name == n).map(|p| p.value.clone());
+        let get = |n: &str| {
+            sets[0]
+                .properties
+                .iter()
+                .find(|p| p.name == n)
+                .map(|p| p.value.clone())
+        };
         assert_eq!(get("Title").as_deref(), Some("bracket"));
         assert_eq!(get("Author").as_deref(), Some("A. Machinist"));
     }
@@ -451,7 +463,11 @@ mod tests {
         ft.extend_from_slice(&(86_400u64 * 10_000_000).to_le_bytes());
         let s = stream(&[(12, ft)]);
         let sets = parse(&s, &["summary"]).unwrap();
-        assert!(sets[0].properties[0].value.starts_with("1601-01-02"), "{}", sets[0].properties[0].value);
+        assert!(
+            sets[0].properties[0].value.starts_with("1601-01-02"),
+            "{}",
+            sets[0].properties[0].value
+        );
     }
 
     #[test]
@@ -472,7 +488,10 @@ mod tests {
 
     #[test]
     fn names_the_sections_each_stream_holds() {
-        assert_eq!(groups_for("\u{5}SummaryInformation"), Some(&["summary"][..]));
+        assert_eq!(
+            groups_for("\u{5}SummaryInformation"),
+            Some(&["summary"][..])
+        );
         assert_eq!(
             groups_for("DocumentSummaryInformation"),
             Some(&["document", "custom"][..])

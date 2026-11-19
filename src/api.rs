@@ -142,7 +142,9 @@ async fn upload_asset(
                     asset.step = Some(summary);
                 }
                 Err(e) => {
-                    return Err(ApiError::bad_request(format!("could not read history export: {e}")));
+                    return Err(ApiError::bad_request(format!(
+                        "could not read history export: {e}"
+                    )));
                 }
             }
         }
@@ -166,27 +168,24 @@ async fn upload_asset(
 fn actions_for(asset: &Asset) -> Vec<Action> {
     let mut root = vec![Action::new(
         "upload",
-        format!(
-            "{} (.{}) · {} KB",
-            asset.name,
-            asset.ext,
-            asset.size / 1024
-        ),
+        format!("{} (.{}) · {} KB", asset.name, asset.ext, asset.size / 1024),
     )];
 
     match asset.kind {
         AssetKind::Mesh => {
             if let (Some(triangles), Some(b)) = (asset.triangles, asset.bbox) {
                 root.push(
-                    Action::new("read mesh", format!("{triangles} triangles")).with(vec![Action::new(
-                        "bounds",
-                        format!(
-                            "{:.2} × {:.2} × {:.2}",
-                            b[3] - b[0],
-                            b[4] - b[1],
-                            b[5] - b[2]
+                    Action::new("read mesh", format!("{triangles} triangles")).with(vec![
+                        Action::new(
+                            "bounds",
+                            format!(
+                                "{:.2} × {:.2} × {:.2}",
+                                b[3] - b[0],
+                                b[4] - b[1],
+                                b[5] - b[2]
+                            ),
                         ),
-                    )]),
+                    ]),
                 );
             }
         }
@@ -246,16 +245,13 @@ fn actions_for(asset: &Asset) -> Vec<Action> {
                                     "custom" => "custom properties (user-defined)",
                                     other => other,
                                 };
-                                Action::new(
-                                    label,
-                                    format!("{} parameter(s)", g.properties.len()),
-                                )
-                                .with(
-                                    g.properties
-                                        .iter()
-                                        .map(|p| Action::new(p.name.clone(), p.value.clone()))
-                                        .collect(),
-                                )
+                                Action::new(label, format!("{} parameter(s)", g.properties.len()))
+                                    .with(
+                                        g.properties
+                                            .iter()
+                                            .map(|p| Action::new(p.name.clone(), p.value.clone()))
+                                            .collect(),
+                                    )
                             })
                             .collect();
                         root.push(
@@ -279,7 +275,10 @@ fn actions_for(asset: &Asset) -> Vec<Action> {
                                 c.references
                                     .iter()
                                     .map(|r| {
-                                        Action::new(r.name.clone(), format!("found in `{}`", r.stream))
+                                        Action::new(
+                                            r.name.clone(),
+                                            format!("found in `{}`", r.stream),
+                                        )
                                     })
                                     .collect(),
                             ),
@@ -290,7 +289,10 @@ fn actions_for(asset: &Asset) -> Vec<Action> {
                         .streams
                         .iter()
                         .map(|s| {
-                            Action::new(s.name.clone(), format!("{} · {} KB", s.role, s.size / 1024))
+                            Action::new(
+                                s.name.clone(),
+                                format!("{} · {} KB", s.role, s.size / 1024),
+                            )
                         })
                         .collect();
                     root.push(
@@ -355,7 +357,9 @@ async fn asset_streams(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let asset = {
         let db = app.db.lock().unwrap();
-        db.asset(&id).cloned().ok_or_else(|| ApiError::not_found("asset"))?
+        db.asset(&id)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found("asset"))?
     };
 
     if let Some(catalogue) = &asset.catalogue {
@@ -923,7 +927,9 @@ async fn predict(
         ));
     }
     if q.w == 0 || q.h == 0 || q.w * q.h > 4096 * 4096 {
-        return Err(ApiError::bad_request("w and h must describe a sensible picture"));
+        return Err(ApiError::bad_request(
+            "w and h must describe a sensible picture",
+        ));
     }
 
     let mut notes: Vec<String> = Vec::new();

@@ -124,12 +124,7 @@ fn path_fragments_the_script_builds_are_not_typos() {
     // Fragments are the `/mesh`, `/history`, `/preview` halves of a concatenated
     // URL. Each one has to appear in some registered route.
     for fragment in [
-        "/mesh",
-        "/history",
-        "/preview",
-        "/streams",
-        "/file",
-        "/cancel",
+        "/mesh", "/history", "/preview", "/streams", "/file", "/cancel",
     ] {
         if js.contains(&format!("\"{fragment}\"")) {
             assert!(
@@ -165,11 +160,116 @@ fn the_page_is_completely_offline() {
 #[test]
 fn the_page_loads_its_scripts_in_order() {
     let html = read("static/index.html");
-    let three = html.find("/vendor/three.min.js").expect("three.js is not loaded");
+    let three = html
+        .find("/vendor/three.min.js")
+        .expect("three.js is not loaded");
     let controls = html
         .find("/vendor/OrbitControls.js")
         .expect("OrbitControls is not loaded");
     let app = html.find("/app.js").expect("app.js is not loaded");
     assert!(three < controls, "three.js must load before OrbitControls");
-    assert!(controls < app, "the vendored scripts must load before app.js");
+    assert!(
+        controls < app,
+        "the vendored scripts must load before app.js"
+    );
+}
+
+/// Every value of one `data-<attr>="..."` on the page, in order.
+fn data_attrs(html: &str, attr: &str) -> Vec<String> {
+    let needle = format!("data-{attr}=\"");
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = html[i..].find(&needle) {
+        let start = i + rel + needle.len();
+        match html[start..].find('"') {
+            Some(len) => {
+                out.push(html[start..start + len].to_string());
+                i = start + len;
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// A duplicate id is a quiet bug of a particular kind: the page still renders,
+/// but `$("#x")` binds whichever of the two came first, so a control silently
+/// stops working while a different one moves. Worth a test of its own.
+#[test]
+fn every_element_id_is_unique() {
+    let html = read("static/index.html");
+    let mut seen: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = html[i..].find("id=\"") {
+        let start = i + rel + 4;
+        match html[start..].find('"') {
+            Some(len) => {
+                seen.push(html[start..start + len].to_string());
+                i = start + len;
+            }
+            None => break,
+        }
+    }
+    assert!(seen.len() > 30, "only found {} ids on the page", seen.len());
+
+    let mut dupes: Vec<&String> = Vec::new();
+    for id in &seen {
+        if seen.iter().filter(|s| *s == id).count() > 1 && !dupes.contains(&id) {
+            dupes.push(id);
+        }
+    }
+    assert!(
+        dupes.is_empty(),
+        "these ids appear more than once in static/index.html: {dupes:?}"
+    );
+}
+
+/// The three drop targets are the promise the studio makes: CAD files, STEP
+/// files and pictures, each on its own lane. A typo in a lane name would make an
+/// upload land on a lane nothing filters by, so the names are checked here
+/// against the ones the studio actually accepts.
+#[test]
+fn the_upload_tiles_name_lanes_the_studio_accepts() {
+    let html = read("static/index.html");
+    let known = ["sldworks", "step", "image", "view", "drawing", "other"];
+
+    let lanes = data_attrs(&html, "lane");
+    assert!(!lanes.is_empty(), "the page offers no upload lane");
+    for lane in &lanes {
+        assert!(
+            known.contains(&lane.as_str()),
+            "static/index.html uses lane {lane:?}, which is not one the studio accepts: {known:?}"
+        );
+    }
+
+    for (id, lane) in [
+        ("lane-sldworks", "sldworks"),
+        ("lane-step", "step"),
+        ("lane-image", "image"),
+    ] {
+        assert!(
+            html.contains(&format!("id=\"{id}\"")),
+            "the page has no {id} tile"
+        );
+        assert!(
+            html.contains(&format!("data-lane=\"{lane}\"")),
+            "no upload tile is wired to the {lane} lane"
+        );
+    }
+}
+
+#[test]
+fn the_artifact_filters_name_real_lanes() {
+    let html = read("static/index.html");
+    let known = [
+        "all", "sldworks", "step", "image", "view", "drawing", "other",
+    ];
+    let filters = data_attrs(&html, "filter");
+    assert!(!filters.is_empty(), "the artifact list has no filter chips");
+    for filter in &filters {
+        assert!(
+            known.contains(&filter.as_str()),
+            "static/index.html filters by {filter:?}, which is not a lane: {known:?}"
+        );
+    }
 }
