@@ -1,0 +1,65 @@
+name: release
+
+# Windows is the machine this is built for, and asking someone to install a Rust
+# toolchain before they can look at a CAD viewer is a bad first impression. This
+# builds the studio on a Windows runner and attaches the .exe plus the static UI
+# to a Release, so the download runs by double-clicking.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test before shipping anything
+        run: cargo test --release
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Stage a folder that runs as-is
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/cadforge.exe dist/
+          Copy-Item static -Recurse dist/static
+          Copy-Item ml -Recurse dist/ml
+          Copy-Item scripts -Recurse dist/scripts
+          Copy-Item tools -Recurse dist/tools
+          Copy-Item docs -Recurse dist/docs
+          Copy-Item run.cmd, README.md dist/
+          # Bytecode is machine-specific and must never ship.
+          Get-ChildItem -Recurse -Directory dist -Filter __pycache__ | Remove-Item -Recurse -Force
+
+      - name: Zip it
+        shell: pwsh
+        run: Compress-Archive -Path dist/* -DestinationPath cadforge-windows.zip -Force
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" `
+            cadforge-windows.zip `
+            --title "cadforge $env:GITHUB_REF_NAME" `
+            --notes "Unzip and double-click run.cmd. Nothing else is needed to open the studio."
+
+      - name: Keep the zip as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cadforge-windows
+          path: cadforge-windows.zip
