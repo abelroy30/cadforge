@@ -169,13 +169,19 @@ def main():
     )[0]
 
     program = parse_program(answer)
+    ops = program.get("ops") if isinstance(program, dict) else []
+    # Not a calibrated probability, and it does not pretend to be one. What it
+    # reflects is how well the answer held together: a program that parsed into
+    # real operations is worth more than one that had to be salvaged into an
+    # empty one. The studio shows it beside the baseline's own number.
+    confidence = 0.6 if ops else 0.1
     result = {
         "source": "model: " + source,
         "width": width,
         "height": height,
         "steps": describe(program),
         "program": program,
-        "confidence": 0.5,
+        "confidence": confidence,
         "notes": [
             "Produced by the trained model, from the picture alone. "
             "Compare it with the studio's geometric baseline to see what "

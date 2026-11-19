@@ -192,6 +192,36 @@ fn data_attrs(html: &str, attr: &str) -> Vec<String> {
     out
 }
 
+/// A lane with no chip is an artifact that exists in the data and cannot be found
+/// in the list: the filters would hide it and nothing would look wrong. The other
+/// direction is the same bug - the studio must not offer a chip for a lane it
+/// never produces.
+#[test]
+fn every_lane_the_studio_uses_can_be_filtered_to() {
+    let html = read("static/index.html");
+    let filters = data_attrs(&html, "filter");
+    let model = read("src/model.rs");
+
+    // Lanes the server assigns by file type.
+    for lane in ["sldworks", "step", "image", "other"] {
+        assert!(
+            filters.iter().any(|f| f == lane),
+            "no filter chip for the {lane:?} lane, so those artifacts cannot be found: {filters:?}"
+        );
+        assert!(
+            model.contains(&format!("\"{lane}\"")),
+            "the page offers a {lane:?} chip that src/model.rs never assigns"
+        );
+    }
+
+    // Lanes the studio creates itself when it captures views and sheets.
+    for lane in ["view", "drawing"] {
+        assert!(
+            filters.iter().any(|f| f == lane),
+            "no filter chip for the {lane:?} lane: {filters:?}"
+        );
+    }
+}
 /// A duplicate id is a quiet bug of a particular kind: the page still renders,
 /// but `$("#x")` binds whichever of the two came first, so a control silently
 /// stops working while a different one moves. Worth a test of its own.

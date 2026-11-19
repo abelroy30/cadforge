@@ -782,6 +782,53 @@ async fn create_dataset(
     Ok(Json(ds))
 }
 
+/// Is a run still working with this model or dataset? Deleting something a live
+/// run is using would leave that run with nothing to record against, so it is
+/// refused and the reason is given. Past runs keep the id they recorded.
+async fn delete_model(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut db = app.db.lock().unwrap();
+    if !db.models.iter().any(|m| m.id == id) {
+        return Err(ApiError::not_found("model"));
+    }
+    if let Some(run) = db.runs.iter().find(|r| {
+        r.base_model_id == id && (r.status == RunStatus::Queued || r.status == RunStatus::Running)
+    }) {
+        return Err(ApiError::bad_request(format!(
+            "\"{}\" is still running against that model - cancel it first",
+            run.name
+        )));
+    }
+    db.models.retain(|m| m.id != id);
+    db.save(&app.root).map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Remove a dataset. Its artifacts are untouched: a dataset is only ever a list
+/// of ids, so nothing on disk belongs to it.
+async fn delete_dataset(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut db = app.db.lock().unwrap();
+    if !db.datasets.iter().any(|d| d.id == id) {
+        return Err(ApiError::not_found("dataset"));
+    }
+    if let Some(run) = db.runs.iter().find(|r| {
+        r.dataset_id == id && (r.status == RunStatus::Queued || r.status == RunStatus::Running)
+    }) {
+        return Err(ApiError::bad_request(format!(
+            "\"{}\" is still training on that dataset - cancel it first",
+            run.name
+        )));
+    }
+    db.datasets.retain(|d| d.id != id);
+    db.save(&app.root).map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Deserialize)]
 struct NewRun {
     #[serde(default)]
@@ -1044,7 +1091,9 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/api/assets/{id}/preview", get(asset_preview))
         .route("/api/assets/{id}/file", get(asset_file))
         .route("/api/models", post(create_model))
+        .route("/api/models/{id}", delete(delete_model))
         .route("/api/datasets", post(create_dataset))
+        .route("/api/datasets/{id}", delete(delete_dataset))
         .route("/api/datasets/{id}/export", get(export_dataset))
         .route("/api/runs", post(create_run))
         .route("/api/runs/{id}/cancel", post(cancel_run))

@@ -7,7 +7,7 @@
 //! Fillets are reported as unsupported rather than silently dropped.
 
 use crate::ops::{Op, Profile, Program};
-use crate::vec3::{add, cross, dot, normalize, perpendicular, push_tri, scale, V3};
+use crate::vec3::{add, cross, dot, len, normalize, perpendicular, push_tri, scale, sub, V3};
 
 /// Segments used when a circle or a cylinder has to become triangles.
 const SEGMENTS: usize = 32;
@@ -93,8 +93,20 @@ impl Solid {
                         c = add(c, *p);
                     }
                     c = scale(c, 1.0 / points.len() as f64);
-                    for w in points.windows(2) {
-                        push_tri(&mut out, c, w[0], w[1]);
+                    // Fan from the centre, closing the loop. `windows(2)` stops one
+                    // pair short, which leaves the wedge between the last vertex and
+                    // the first unswept - a hole in the face that both the preview
+                    // and the score can see.
+                    let n = points.len();
+                    for i in 0..n {
+                        let a = points[i];
+                        let b = points[(i + 1) % n];
+                        // A loop that repeats its first point contributes a
+                        // zero-width wedge; skip it rather than emit a sliver.
+                        if len(sub(b, a)) < 1e-12 {
+                            continue;
+                        }
+                        push_tri(&mut out, c, a, b);
                     }
                 }
                 Face::Cylindrical {
@@ -316,4 +328,197 @@ pub fn convex_hull_2d(mut pts: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
     upper.pop();
     lower.extend(upper);
     lower
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vec3::{cross, len, sub};
+
+    fn square(w: f64, d: f64) -> Profile {
+        Profile::Polygon {
+            points: vec![[0.0, 0.0, 0.0], [w, 0.0, 0.0], [w, d, 0.0], [0.0, d, 0.0]],
+        }
+    }
+
+    fn program(ops: Vec<Op>) -> Program {
+        Program {
+            version: crate::ops::VERSION,
+            units: "mm".into(),
+            ops,
+        }
+    }
+
+    fn extrude(w: f64, d: f64, up: f64) -> Op {
+        Op::Extrude {
+            profile: square(w, d),
+            distance: up,
+            direction: [0.0, 0.0, 1.0],
+        }
+    }
+
+    fn soup_area(tris: &[f32]) -> f64 {
+        let mut total = 0.0;
+        for t in tris.chunks_exact(9) {
+            let a = [t[0] as f64, t[1] as f64, t[2] as f64];
+            let b = [t[3] as f64, t[4] as f64, t[5] as f64];
+            let c = [t[6] as f64, t[7] as f64, t[8] as f64];
+            total += 0.5 * len(cross(sub(b, a), sub(c, a)));
+        }
+        total
+    }
+
+    /// The bug this guards: a fan over a face's loop has to include the wedge
+    /// between the last vertex and the first. Missing it leaves a hole in every
+    /// face - invisible in a preview, but read by `score` as a real deviation of
+    /// several millimetres, which is exactly the kind of thing a training signal
+    /// must not invent.
+    ///
+    /// Area is the test that cannot be fooled: a missing wedge loses area, a
+    /// doubled one gains it, and counting triangles would notice neither.
+    #[test]
+    fn every_face_is_fully_triangulated() {
+        let rebuilt = evaluate(&program(vec![extrude(20.0, 10.0, 5.0)])).unwrap();
+        let tris = rebuilt.solid.triangulate();
+
+        // Six quad faces, one triangle per edge of every loop.
+        assert_eq!(tris.len() / 9, 6 * 4);
+
+        let expected = 2.0 * (20.0 * 10.0) + 2.0 * (20.0 * 5.0) + 2.0 * (10.0 * 5.0);
+        let area = soup_area(&tris);
+        assert!(
+            (area - expected).abs() < 1e-6,
+            "surface area {area} should be {expected}"
+        );
+    }
+
+    #[test]
+    fn an_extrude_is_as_thick_as_it_was_told_to_be() {
+        let rebuilt = evaluate(&program(vec![extrude(20.0, 10.0, 5.0)])).unwrap();
+        assert_eq!(rebuilt.ops_applied, 1);
+        assert!(rebuilt.warnings.is_empty(), "{:?}", rebuilt.warnings);
+
+        let tris = rebuilt.solid.triangulate();
+        let mut lo = f64::MAX;
+        let mut hi = f64::MIN;
+        for t in tris.chunks_exact(9) {
+            for k in [2usize, 5, 8] {
+                let z = t[k] as f64;
+                lo = lo.min(z);
+                hi = hi.max(z);
+            }
+        }
+        assert!((hi - lo - 5.0).abs() < 1e-9, "thickness {}", hi - lo);
+        assert!(lo.abs() < 1e-9, "should start at the origin, got {lo}");
+    }
+
+    /// The engine cannot fillet. Saying so is part of the contract: a caller has to
+    /// be able to tell a rounded part from one where the round was dropped.
+    #[test]
+    fn a_fillet_is_reported_rather_than_dropped() {
+        let rebuilt = evaluate(&program(vec![
+            extrude(20.0, 10.0, 5.0),
+            Op::Fillet { radius: 1.0 },
+        ]))
+        .unwrap();
+        assert!(
+            rebuilt.warnings.iter().any(|w| w.contains("fillet")),
+            "the engine must say it cannot fillet: {:?}",
+            rebuilt.warnings
+        );
+        // What it could build is still there, complete.
+        assert_eq!(rebuilt.solid.triangulate().len() / 9, 6 * 4);
+    }
+
+    #[test]
+    fn drilling_before_anything_exists_says_so() {
+        let rebuilt = evaluate(&program(vec![Op::Hole {
+            diameter: 6.0,
+            through: true,
+            depth: 0.0,
+            at: [10.0, 5.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+        }]))
+        .unwrap();
+        assert!(
+            rebuilt.warnings.iter().any(|w| w.contains("cannot drill")),
+            "warnings: {:?}",
+            rebuilt.warnings
+        );
+    }
+
+    #[test]
+    fn a_hole_pattern_drills_one_wall_per_position() {
+        let rebuilt = evaluate(&program(vec![
+            extrude(60.0, 40.0, 8.0),
+            Op::HolePattern {
+                diameter: 6.0,
+                through: true,
+                depth: 0.0,
+                positions: vec![
+                    [12.0, 10.0, 0.0],
+                    [48.0, 10.0, 0.0],
+                    [12.0, 30.0, 0.0],
+                    [48.0, 30.0, 0.0],
+                ],
+                axis: [0.0, 0.0, 1.0],
+            },
+        ]))
+        .unwrap();
+        assert_eq!(rebuilt.ops_applied, 2);
+        assert!(rebuilt.warnings.is_empty(), "{:?}", rebuilt.warnings);
+
+        let walls = rebuilt
+            .solid
+            .faces
+            .iter()
+            .filter(|f| matches!(f, Face::Cylindrical { .. }))
+            .count();
+        assert_eq!(walls, 4, "one wall per hole");
+    }
+
+    #[test]
+    fn the_hull_drops_points_inside_and_on_an_edge() {
+        let hull = convex_hull_2d(vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (5.0, 5.0), // inside
+            (5.0, 0.0), // on an edge
+        ]);
+        assert_eq!(hull.len(), 4, "{hull:?}");
+    }
+
+    #[test]
+    fn the_hull_of_a_triangle_is_its_three_corners() {
+        let hull = convex_hull_2d(vec![(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (1.0, 1.0)]);
+        assert_eq!(hull.len(), 3, "{hull:?}");
+    }
+
+    #[test]
+    fn a_cylinder_face_can_be_measured_along_its_axis() {
+        let rebuilt = evaluate(&program(vec![
+            extrude(60.0, 40.0, 8.0),
+            Op::HolePattern {
+                diameter: 6.0,
+                through: true,
+                depth: 0.0,
+                positions: vec![[12.0, 10.0, 0.0]],
+                axis: [0.0, 0.0, 1.0],
+            },
+        ]))
+        .unwrap();
+        let wall = rebuilt
+            .solid
+            .faces
+            .iter()
+            .find_map(|f| match f {
+                Face::Cylindrical { radius, length, .. } => Some((*radius, *length)),
+                _ => None,
+            })
+            .expect("a hole should leave a cylindrical wall");
+        assert!((wall.0 - 3.0).abs() < 1e-9, "radius {}", wall.0);
+        assert!((wall.1 - 8.0).abs() < 1e-9, "length {}", wall.1);
+    }
 }

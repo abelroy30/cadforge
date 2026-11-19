@@ -71,7 +71,9 @@ The whole HTTP API as one axum router, plus one error type.
 | `GET /api/assets/{id}/preview` | `asset_preview` | extracted preview image bytes |
 | `GET /api/assets/{id}/file` | `asset_file` | the original bytes back |
 | `POST /api/models` | `create_model` | register a base model |
+| `DELETE /api/models/{id}` | `delete_model` | remove one (refused while a run uses it) |
 | `POST /api/datasets` | `create_dataset` | create a dataset from artifact ids |
+| `DELETE /api/datasets/{id}` | `delete_dataset` | remove one (refused while a run uses it) |
 | `GET /api/datasets/{id}/export` | `export_dataset` | the trainer manifest |
 | `POST /api/runs` | `create_run` | queue a run (spawns `pipeline::execute`) |
 | `POST /api/runs/{id}/cancel` | `cancel_run` | cancel a queued or running run |

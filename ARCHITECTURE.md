@@ -94,7 +94,9 @@ tree, feature-history timeline and a command line are the obvious next adds.
 | `GET /api/assets/{id}/preview` | the extracted preview image |
 | `GET /api/assets/{id}/file` | original bytes back |
 | `POST /api/models` | register a base model or a custom architecture |
+| `DELETE /api/models/{id}` | remove one - refused while a run is using it |
 | `POST /api/datasets` | create a dataset from artifact ids |
+| `DELETE /api/datasets/{id}` | remove one - refused while a run is using it |
 | `GET /api/datasets/{id}/export` | the dataset as a trainer manifest |
 | `POST /api/runs` | start a training run |
 | `POST /api/runs/{id}/cancel` | cancel a run |
@@ -243,11 +245,22 @@ metric itself.
 
 ## 7. Known issues
 
-* `score::compare` reports a `max_gap` of 7.77 mm on the generated plate even
+* ~~`score::compare` reports a `max_gap` of 7.77 mm on the generated plate even
   though the chamfer distance is 0.02 mm and every triangle vertex matches
-  exactly. 539 of the 544 surface sample points are identical between target and
-  rebuild; the 5 that differ are triangle *centroids* belonging to different but
-  equivalent triangulations of the same quads. The geometry is therefore right,
-  and the suspicion sits in the sample set or the nearest-neighbour search in
-  `src/score.rs`. Unresolved. It matters because this distance is the training
-  signal - a phantom outlier would teach the model to chase nothing.
+  exactly.~~ **Resolved - and the diagnosis recorded above was wrong.** The gap was
+  real geometry, not a sampling artefact. The face fans in `src/solid.rs` and
+  `src/step.rs` used `windows(2)`, which never sweeps the wedge between a loop's
+  last vertex and its first, so every planar face was missing one triangle - 274
+  triangles instead of 280 on the plate, one per face. Measured against the
+  nearest sample *point*, the unweighted mean over 544 samples hid it (5 bad
+  samples); measured against the nearest *surface*, the hole is unmissable. Both
+  fans now close the loop, and `score::compare` measures distance to the surface
+  and weights the mean by area, so a different triangulation of the same face
+  scores exactly zero. The round trip now asserts that no point of the rebuild is
+  more than 0.01 mm from the original. The account of this is in
+  `docs/SUMMARY.md`.
+
+* The interface has never been run in a real browser, `CaptureViews.bas` has never
+  been executed on a real part, and `freecad::run` has never run - each for want of
+  the tool rather than of the code. `docs/SUMMARY.md` lists these, the untested
+  surfaces, and the remaining gaps, and is the file to keep current.

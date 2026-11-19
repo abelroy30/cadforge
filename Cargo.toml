@@ -22,3 +22,12 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+
+# What ships is one binary that opens a browser, so make that binary worth
+# downloading. Tests run under the dev profile, which is left alone.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

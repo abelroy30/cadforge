@@ -284,3 +284,20 @@ table.streams td.num{text-align:right;white-space:nowrap;}
 }
 .console .warn{color:var(--warn);}
 .console .error{color:var(--err);}
+
+
+/* Narrow windows. The studio is a three-column workspace, which does not fit a
+   laptop screen held to one side, so the inspector moves under the viewport
+   first and the artifact column joins it after that. Better a squeezed layout
+   than a middle column crushed to nothing. */
+@media (max-width: 1200px){
+  .workspace{grid-template-columns:280px 1fr;}
+  .panel.right{grid-column:1 / -1;border-left:0;border-top:1px solid var(--line);}
+}
+
+@media (max-width: 860px){
+  .workspace{grid-template-columns:1fr;}
+  .panel.left{border-right:0;border-bottom:1px solid var(--line);}
+  .panel.right{border-top:1px solid var(--line);}
+  .viewport{min-height:60vh;}
+}

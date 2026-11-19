@@ -214,12 +214,33 @@ function renderAssets() {
   section(list, rows, empty);
 }
 
+// A delete affordance for a row that can be removed. A model or a dataset a run
+// is still using is refused by the server, and the reason is shown as-is rather
+// than swallowing it behind a generic failure.
+function removeButton(label, path) {
+  const x = el("span", "x", "\u00d7");
+  x.title = "Delete";
+  x.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm("Delete " + label + "?")) return;
+    try {
+      await api(path, { method: "DELETE" });
+    } catch (err) {
+      alert(err.message || String(err));
+      return;
+    }
+    await refresh();
+  });
+  return x;
+}
+
 function renderModels() {
   const list = $("#model-list");
   const rows = STATE.models.map((m) => {
     const row = el("div", "row");
     row.append(el("span", "name", m.name));
     row.append(el("span", "chip-kind", m.kind));
+    row.append(removeButton(m.name, "/api/models/" + m.id));
     return row;
   });
   section(list, rows, "No base models registered.");
@@ -232,6 +253,7 @@ function renderDatasets() {
     row.append(el("span", "name", d.name));
     const n = (d.asset_ids || []).length;
     row.append(el("span", "chip-kind", n + " file" + (n === 1 ? "" : "s")));
+    row.append(removeButton(d.name, "/api/datasets/" + d.id));
     return row;
   });
   section(list, rows, "No datasets yet.");

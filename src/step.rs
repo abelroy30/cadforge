@@ -428,7 +428,7 @@ fn parse_value(toks: &[Tok], i: usize) -> Result<(Value, usize), String> {
 
 /* -------------------------------------------------------------- geometry */
 
-use crate::vec3::{add, cross, dot, normalize, perpendicular, scale, sub};
+use crate::vec3::{add, cross, dot, len, normalize, perpendicular, scale, sub};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)] // ref_dir is unused until we reconstruct sketches
@@ -561,11 +561,19 @@ impl StepFile {
             for k in 0..3 {
                 c[k] /= pts.len() as f64;
             }
-            for w in pts.windows(2) {
+            // Fan from the centre, closing the loop. `windows(2)` stops one pair
+            // short, leaving the wedge between the last vertex and the first
+            // unswept: a hole in a face, which scoring reads as real deviation.
+            for i in 0..pts.len() {
                 if out.len() / 9 >= cap {
                     return;
                 }
-                for v in [c, w[0], w[1]] {
+                let a = pts[i];
+                let b = pts[(i + 1) % pts.len()];
+                if len(sub(b, a)) < 1e-12 {
+                    continue;
+                }
+                for v in [c, a, b] {
                     out.push(v[0] as f32);
                     out.push(v[1] as f32);
                     out.push(v[2] as f32);
@@ -1212,8 +1220,10 @@ mod fixture_tests {
             "steps: {ops:?}"
         );
         assert!(!a.triangles.is_empty(), "faces should preview as triangles");
-        // 6 planar quads fan into 3 triangles each, plus a 32-segment strip per hole.
-        assert_eq!(a.triangles.len() / 9, 6 * 3 + 4 * 32 * 2);
+        // A planar face fans from its centre to one triangle per loop edge, so a
+        // quad gives four. Three would leave the wedge between the last vertex and
+        // the first unswept - a hole in the face - which is what this used to do.
+        assert_eq!(a.triangles.len() / 9, 6 * 4 + 4 * 32 * 2);
     }
 
     #[test]
@@ -1262,9 +1272,17 @@ mod round_trip_tests {
         assert!(!tris.is_empty());
 
         let score = crate::score::compare(&tris, &analysis.triangles).unwrap();
+        // Tight on purpose: the rebuild is the same surfaces, so this catches a gap
+        // in a face (which used to show up here as a 7 mm outlier) as well as drift.
         assert!(
-            score.chamfer < 0.2,
+            score.chamfer < 0.01,
             "rebuilt part should sit on the original: chamfer {} max gap {}",
+            score.chamfer,
+            score.max_gap
+        );
+        assert!(
+            score.max_gap < 0.01,
+            "no point of the rebuild may be far from the original: chamfer {} max gap {}",
             score.chamfer,
             score.max_gap
         );
@@ -1300,6 +1318,7 @@ mod round_trip_tests {
         assert_eq!(program.op_names(), vec!["extrude"]);
         let rebuilt = crate::solid::evaluate(&program).unwrap();
         let tris = rebuilt.solid.triangulate();
-        assert_eq!(tris.len() / 9, 6 * 3);
+        // Six quad faces, four triangles each: one per edge of every loop.
+        assert_eq!(tris.len() / 9, 6 * 4);
     }
 }

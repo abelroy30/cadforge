@@ -100,7 +100,8 @@ inspector and the training console on the right.
   build steps, and for SolidWorks documents the parameters, the references and
   the stream table.
 * **Picture to steps** — drop a picture, press *Run*, get the build steps.
-* **Base models** — `Register` to point the studio at a model.
+* **Base models** — `Register` to point the studio at a model, and `×` on a row
+  to remove one (refused while a run is still using it, and it says so).
 * **Training** — machine capabilities, model and dataset pickers, *Start training
   run*, a progress bar, the stage checklist, the live log and *Cancel*.
 
@@ -313,6 +314,11 @@ curl -X POST localhost:8787/api/runs \
   -d '{"base_model_id":"<id>","dataset_id":"<id>"}'
 
 curl -X POST localhost:8787/api/runs/<id>/cancel
+
+# removing things again. A model or a dataset a run is still using is refused,
+# with the reason in the error body, so cancel the run first.
+curl -X DELETE localhost:8787/api/models/<id>
+curl -X DELETE localhost:8787/api/datasets/<id>
 curl -X DELETE localhost:8787/api/assets/<id>
 ```
 
@@ -412,6 +418,8 @@ is all of it.
 | *"no held-out pairs, so this run has no honest score"* | Your dataset is small enough that the 10% split held nothing back. Add parts, or lower `CADFORGE_VAL_PCT` |
 | *"warning: under 8 GB of VRAM…"* | Lower `CADFORGE_MAXLEN` (768 or less) and keep `CADFORGE_BATCH=1`; see `TRAINING.md` |
 | A run finishes with no outputs | The trainer wrote nothing into `CADFORGE_OUT`; the studio warns about this rather than passing it as success |
+| *"…is still running against that model - cancel it first"* | A live run is using it. `Cancel` the run, then delete |
+| A run finishes, then its model or dataset vanishes from the pickers | It was deleted after the run; the run's own record is kept, but nothing can be started against it again |
 
 If a run hangs, the log and the run's `stage` tell you where. The pipeline is
 covered by a test that fails if a run stops dead rather than merely erroring.
