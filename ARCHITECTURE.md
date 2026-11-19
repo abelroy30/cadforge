@@ -4,7 +4,10 @@ A CAD-shaped web studio whose job is to train small models that **generate
 parametric CAD**: you show it shapes (and the operations that made them), it
 learns to produce the operations for a new shape you only show the result of.
 
-This document is the plan. `README.md` is how to run what exists today.
+This document is the plan. `README.md` is how to run what exists today, and the
+`docs/` folder is the reference: `USAGE.md` (how to use it), `CONCEPTS.md` (the
+vocabulary), `GLOSSARY.md` (every file), `PROJECT.md` (what it is and why) and
+`SUMMARY.md` (where it stands).
 
 ---
 
@@ -21,7 +24,7 @@ The whole loop is wired end to end, with the modelling intelligence stubbed:
 | STEP header reader (schema, product name) | working |
 | Base-model registry (base or user-defined architecture) | working |
 | Datasets built from selected artifacts | working |
-| Training pipeline with 7 real stages, live progress + log over SSE | working (simulated) |
+| Training pipeline with 8 real stages, live progress + log over SSE | working (simulated) |
 | External trainer hook (`CADFORGE_TRAINER`) | working |
 | STEP (ISO 10303-21) reader: B-rep topology, units, entity graph | working |
 | Feature history read back off the B-rep (extrude, holes, patterns, fillets) | working |
@@ -30,7 +33,10 @@ The whole loop is wired end to end, with the modelling intelligence stubbed:
 | Rebuild driver: native engine executes a program to geometry | working |
 | FreeCAD engine: emits a macro, runs it where freecadcmd exists | working (untested: no FreeCAD here) |
 | Scoring: symmetric Chamfer distance between a rebuild and a target | working |
-| SolidWorks-native history, B-spline surfaces, real fine-tuning | **not yet** |
+| SolidWorks feature-tree **export** read back as recorded history | working |
+| SolidWorks `.SLDPRT` feature tree decoded from the file itself | **not yet**, by design: the encoding is proprietary and listing it honestly beats guessing |
+| QLoRA fine-tune script with held-out scoring | written; not yet run on a GPU here |
+| B-spline and advanced surfaces, true face trimming | **not yet** |
 
 ## 2. The loop we are building
 
@@ -73,14 +79,23 @@ tree, feature-history timeline and a command line are the obvious next adds.
 | Route | Purpose |
 |---|---|
 | `GET /api/state` | everything the GUI needs on load |
+| `GET /api/system` | what the machine can do: GPU, Python, torch, CUDA |
 | `GET /api/trainer` | pipeline name + stages (drives the UI checklist) |
+| `GET /api/engines` | which rebuild engines are available here |
+| `POST /api/predict` | raw RGBA picture -> build steps |
+| `POST /api/rebuild` | an operation program -> geometry, and scored |
 | `GET /api/events` | SSE stream of every run change |
-| `POST /api/assets?name=` | upload an artifact (raw body, no multipart) |
+| `GET /api/assets/events` | SSE stream of every artifact change |
+| `POST /api/assets?name=&lane=` | upload an artifact (raw body, no multipart) |
+| `DELETE /api/assets/{id}` | remove an artifact and its files |
 | `GET /api/assets/{id}/mesh` | triangle soup for the viewport |
+| `GET /api/assets/{id}/history` | reconstructed build history + preview |
+| `GET /api/assets/{id}/streams` | stream catalogue of a stored document |
+| `GET /api/assets/{id}/preview` | the extracted preview image |
 | `GET /api/assets/{id}/file` | original bytes back |
-| `DELETE /api/assets/{id}` | remove an artifact |
 | `POST /api/models` | register a base model or a custom architecture |
 | `POST /api/datasets` | create a dataset from artifact ids |
+| `GET /api/datasets/{id}/export` | the dataset as a trainer manifest |
 | `POST /api/runs` | start a training run |
 | `POST /api/runs/{id}/cancel` | cancel a run |
 
@@ -90,15 +105,21 @@ tree, feature-history timeline and a command line are the obvious next adds.
 node; Postgres + object storage when this moves to the cloud.
 
 ### 3.4 Pipeline (`src/pipeline.rs`)
-The seven stages are the real workflow, not filler:
+The eight stages are the real workflow, not filler, and their weights are their
+share of the progress bar:
 
-1. Resolve base model
-2. Register dataset
-3. Extract feature history — recover the operations behind each recorded shape
-4. Tokenise operation sequences — sketch/extrude/fillet as model tokens
-5. Fine-tune
-6. Evaluate reconstruction — show a novel shape, ask for the steps, score it
-7. Save checkpoint
+1. Resolve base model — 0.05
+2. Register dataset — 0.10
+3. Pair pictures with operations — 0.10
+4. Extract feature history — recover the operations behind each recorded shape — 0.20
+5. Tokenise operation sequences — sketch/extrude/fillet as model tokens — 0.15
+6. Fine-tune — 0.30
+7. Evaluate reconstruction — show a novel shape, ask for the steps, score it — 0.15
+8. Save checkpoint — 0.05
+
+A run also reports, in its log, what the dataset is made of (`shop: 3 step, 4 image`)
+and how its pairs split (`pairs: 4 usable of 4 picture(s) - 3 train, 1 held out`),
+so a run that has nothing to learn from says so instead of appearing to work.
 
 **Plugging in a real trainer.** Two seams, no app changes needed:
 

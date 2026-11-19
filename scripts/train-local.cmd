@@ -36,7 +36,11 @@ if "%CADFORGE_EPOCHS%"=="" set CADFORGE_EPOCHS=3
 if "%CADFORGE_BATCH%"=="" set CADFORGE_BATCH=1
 if "%CADFORGE_MAXLEN%"=="" set CADFORGE_MAXLEN=1024
 if "%CADFORGE_GRAD_ACCUM%"=="" set CADFORGE_GRAD_ACCUM=16
-if "%CADFORGE_VAL_PCT%"=="" set CADFORGE_VAL_PCT=10
+
+REM No split setting here on purpose. The train/val side is decided when the
+REM studio writes the manifest - from CADFORGE_VAL_PCT in the studio's own
+REM environment - and the trainer reads that per-pair `split` field. Setting it
+REM here would look like it did something and would not.
 
 echo dataset : %CADFORGE_DATASET%
 echo out     : %CADFORGE_OUT%

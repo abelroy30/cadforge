@@ -6,6 +6,12 @@ produce the operations for a new shape from the shape alone.
 
 The plan lives in `ARCHITECTURE.md`. This file is how to run it.
 
+**More documentation:** `docs/USAGE.md` (using it, in detail) ·
+`docs/CONCEPTS.md` (the vocabulary and the ideas) · `docs/GLOSSARY.md` (every
+file, and the dependency map) · `docs/PROJECT.md` (what it is and why) ·
+`docs/SUMMARY.md` (where it stands — verified, unverified, and what is known
+broken) · `docs/TRAINING.md` (fine-tuning on a small GPU).
+
 ## Run it
 
 **Windows 11: double-click `run.cmd`.**
@@ -194,8 +200,10 @@ src/stl.rs        STL parser (ASCII + binary)
 src/step.rs       STEP (ISO 10303-21) reader + build-history reconstruction
 static/           the web GUI (plain JS + three.js, no build step)
 ml/               training and inference scripts (optional, needs Python)
-docs/TRAINING.md  what a 4B model on a 3070 really takes
-scripts/          Windows helpers: ML setup
+docs/             USAGE, CONCEPTS, GLOSSARY, PROJECT, SUMMARY, TRAINING - plus
+                  release-workflow.yml, kept here until a token with the
+                  `workflow` scope can push it to .github/workflows/
+scripts/          Windows helpers: local fine-tune, ML setup
 tools/            STEP test-part generator, preview freezer, SolidWorks macro
 tests/ui_contract.rs  the interface contract: ids exist, routes match, no network
 run.cmd, run.sh   start it and open the browser
