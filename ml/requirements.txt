@@ -1,0 +1,18 @@
+# The training stack for cadforge.
+#
+# Install it with scripts\setup-ml.cmd (Windows), which also installs PyTorch
+# with CUDA support - that one has to come from its own index, so it is not
+# listed here.
+#
+# By hand:
+#   python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   python -m pip install -r ml/requirements.txt
+
+transformers>=4.46
+peft>=0.13
+bitsandbytes>=0.44          # 4-bit quantisation: what makes a 4B model fit
+accelerate>=1.0
+datasets>=3.0
+pillow>=10.0
+safetensors>=0.4
+sentencepiece>=0.2

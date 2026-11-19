@@ -1,6 +1,8 @@
 //! HTTP API. JSON in, JSON out; one SSE stream carries live run progress.
 
-use crate::model::{classify, now, Action, Asset, AssetKind, BaseModel, Dataset, Db, Run, RunStatus};
+use crate::model::{
+    classify, lane_for, now, Action, Asset, AssetKind, BaseModel, Dataset, Db, Run, RunStatus,
+};
 use crate::{stl, App};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -38,6 +40,10 @@ async fn trainer() -> Json<serde_json::Value> {
 #[derive(Deserialize)]
 struct UploadQuery {
     name: String,
+    /// Which bulk lane the file came in by. Optional: a file dropped straight on
+    /// the viewport is classified from its extension instead.
+    #[serde(default)]
+    lane: Option<String>,
 }
 
 /// Upload one artifact. The body is the raw file; the name arrives as a query
@@ -52,6 +58,10 @@ async fn upload_asset(
     }
     let name = safe_name(&q.name);
     let (ext, kind) = classify(&name);
+    let lane = q
+        .lane
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| lane_for(&ext, &kind).to_string());
     let id = uuid::Uuid::new_v4().to_string();
 
     let dir = crate::model::assets_dir(&app.root);
@@ -66,6 +76,7 @@ async fn upload_asset(
         kind: kind.clone(),
         size: body.len() as u64,
         uploaded_at: now(),
+        lane,
         triangles: None,
         bbox: None,
         header: None,
@@ -876,14 +887,146 @@ async fn asset_events(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// What the machine can do: the graphics card, the Python stack, and what to
+/// install if something is missing. The studio shows this before a run, so a
+/// four-billion-parameter plan is grounded in the hardware that will run it.
+async fn system() -> Json<crate::system::SystemInfo> {
+    // Probing shells out to nvidia-smi and python, which are slow enough to be
+    // worth keeping off the async worker.
+    let info = tokio::task::spawn_blocking(crate::system::detect)
+        .await
+        .unwrap_or_else(|_| crate::system::detect());
+    Json(info)
+}
+
+#[derive(Deserialize)]
+struct PredictQuery {
+    w: usize,
+    h: usize,
+    #[serde(default)]
+    asset_id: Option<String>,
+}
+
+/// Turn a picture into build steps.
+///
+/// The body is the picture's raw RGBA pixels - the browser has already decoded
+/// whatever the user dropped, so the studio needs no image decoder of its own.
+/// If `CADFORGE_VISION` names a command, that model is asked first; otherwise,
+/// or if it fails, the built-in geometric baseline answers, and says so.
+async fn predict(
+    Query(q): Query<PredictQuery>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.is_empty() {
+        return Err(ApiError::bad_request(
+            "POST the picture's pixels: the body must be the raw RGBA of a w x h image",
+        ));
+    }
+    if q.w == 0 || q.h == 0 || q.w * q.h > 4096 * 4096 {
+        return Err(ApiError::bad_request("w and h must describe a sensible picture"));
+    }
+
+    let mut notes: Vec<String> = Vec::new();
+
+    if let Some(cmd) = std::env::var("CADFORGE_VISION")
+        .ok()
+        .filter(|c| !c.trim().is_empty())
+    {
+        match vision_command(&cmd, &body, q.w, q.h).await {
+            Ok(mut inference) => {
+                inference.source = format!("model: {cmd}");
+                return Ok(Json(serde_json::to_value(inference).unwrap_or_default()));
+            }
+            Err(e) => notes.push(format!(
+                "the configured vision model ({cmd}) did not answer, so the built-in 
+                 geometric baseline was used instead: {e}"
+            )),
+        }
+    }
+
+    let mut inference = crate::vision::infer(&body, q.w, q.h).map_err(ApiError::bad_request)?;
+    inference.notes.splice(0..0, notes);
+    let mut value = serde_json::to_value(&inference).unwrap_or_default();
+    if let Some(id) = &q.asset_id {
+        value["asset_id"] = serde_json::json!(id);
+    }
+    Ok(Json(value))
+}
+
+/// Ask a configured vision model for the steps.
+///
+/// The pixels go to a temporary file, whose path is handed over in
+/// `CADFORGE_IMAGE` along with the width and height; the model must print an
+/// object shaped like `vision::Inference` (at minimum `steps` and `program`) as
+/// JSON on stdout. That is the only contract, so a script, a Python process or
+/// a compiled binary all plug in the same way.
+async fn vision_command(
+    cmd: &str,
+    rgba: &[u8],
+    w: usize,
+    h: usize,
+) -> Result<crate::vision::Inference, String> {
+    let path = std::env::temp_dir().join(format!("cadforge-predict-{}.rgba", uuid::Uuid::new_v4()));
+    std::fs::write(&path, rgba).map_err(|e| format!("could not stage the picture: {e}"))?;
+
+    let (program, args): (&str, Vec<&str>) = if cfg!(windows) {
+        ("cmd", vec!["/C", cmd])
+    } else {
+        ("sh", vec!["-c", cmd])
+    };
+    let out = tokio::process::Command::new(program)
+        .args(args)
+        .env("CADFORGE_IMAGE", &path)
+        .env("CADFORGE_WIDTH", w.to_string())
+        .env("CADFORGE_HEIGHT", h.to_string())
+        .output()
+        .await;
+    let _ = std::fs::remove_file(&path);
+
+    let out = out.map_err(|e| format!("could not run it: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "it exited with {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    // A model that logs before it answers is normal; take the last JSON object.
+    let text = String::from_utf8_lossy(&out.stdout);
+    let start = text
+        .rfind('{')
+        .ok_or_else(|| "it printed no JSON".to_string())?;
+    let candidate = &text[start..];
+    let mut inference: crate::vision::Inference = serde_json::from_str(candidate)
+        .map_err(|e| format!("its JSON did not match the expected shape: {e}"))?;
+    inference.source = format!("model: {cmd}");
+    Ok(inference)
+}
+
+/// The dataset in the form a trainer wants: every picture paired with the
+/// operations that make what it shows, ready to be written to disk.
+async fn export_dataset(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let manifest = {
+        let db = app.db.lock().unwrap();
+        crate::dataset::manifest(&app.root, &db, &id).map_err(ApiError::not_found_msg)?
+    };
+    Ok(Json(manifest))
+}
+
 pub fn router(app: Arc<App>) -> axum::Router {
     use axum::extract::DefaultBodyLimit;
     use axum::routing::{delete, get, post};
 
     axum::Router::new()
         .route("/api/state", get(state))
+        .route("/api/system", get(system))
         .route("/api/trainer", get(trainer))
         .route("/api/engines", get(engines))
+        .route("/api/predict", post(predict))
         .route("/api/rebuild", post(rebuild))
         .route("/api/events", get(events))
         .route("/api/assets/events", get(asset_events))
@@ -896,6 +1039,7 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/api/assets/{id}/file", get(asset_file))
         .route("/api/models", post(create_model))
         .route("/api/datasets", post(create_dataset))
+        .route("/api/datasets/{id}/export", get(export_dataset))
         .route("/api/runs", post(create_run))
         .route("/api/runs/{id}/cancel", post(cancel_run))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
@@ -919,6 +1063,12 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: format!("{what} not found"),
+        }
+    }
+    fn not_found_msg(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
         }
     }
     fn internal(e: impl std::fmt::Display) -> Self {

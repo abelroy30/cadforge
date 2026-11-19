@@ -4,3 +4,5 @@
 *.log
 .DS_Store
 preview/
+__pycache__/
+*.pyc

@@ -60,6 +60,11 @@ pub struct Asset {
     pub kind: AssetKind,
     pub size: u64,
     pub uploaded_at: String,
+    /// Which door the file came in by: `sldworks`, `step`, `image`, `view`,
+    /// `drawing` or `other`. It is what the two bulk upload lanes write, and it
+    /// is how the studio and the trainer tell a part from a picture of one.
+    #[serde(default)]
+    pub lane: String,
     /// Triangle count, when the artifact is a mesh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub triangles: Option<usize>,
@@ -224,4 +229,23 @@ pub fn classify(name: &str) -> (String, AssetKind) {
         _ => AssetKind::Other,
     };
     (ext, kind)
+}
+
+/// The upload lane a file belongs to when the browser does not say.
+///
+/// The studio has two bulk lanes - SolidWorks documents and STEP files - plus
+/// pictures; the lane is what a dataset is actually made of, so it is recorded
+/// rather than guessed again later.
+pub fn lane_for(ext: &str, kind: &AssetKind) -> &'static str {
+    match ext {
+        "sldprt" | "sldasm" | "slddrw" => "sldworks",
+        "step" | "stp" => "step",
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" => "image",
+        _ => match kind {
+            AssetKind::SwPart | AssetKind::SwAssembly | AssetKind::SwDrawing => "sldworks",
+            AssetKind::Step => "step",
+            AssetKind::Image => "image",
+            _ => "other",
+        },
+    }
 }

@@ -8,8 +8,18 @@ The plan lives in `ARCHITECTURE.md`. This file is how to run it.
 
 ## Run it
 
-**Windows:** double-click `run.cmd`. It checks for Rust, starts the studio and
-opens the browser. Nothing else to install.
+**Windows 11: double-click `run.cmd`.**
+
+The first time it builds the studio (a few minutes) and needs Rust - it tells you
+exactly how to get it if it is missing. Every time after that it starts in a
+second and **opens your browser by itself** on http://localhost:8787.
+
+Everything else is already in this folder: the web interface, the CAD readers,
+the rebuild engine, and sample documents. Nothing is downloaded at runtime and
+nothing needs the network.
+
+After the first build, `target\release\cadforge.exe` *is* the studio - pin it to
+the taskbar, or make your own shortcut to it.
 
 **macOS / Linux:** `./run.sh` does the same thing.
 
@@ -35,17 +45,32 @@ tools/make_preview.py --out preview/cadforge-preview.html
 
 ## Use it
 
-1. **Upload** - drag files onto the viewport (or press *Upload*, or drop a whole
-   folder): many at once is fine. The **Processing** panel shows each file as it
-   goes - queued, uploading, done - and every artifact lands in the Artifacts
-   list the moment the server has read it, without a refresh.
-2. Click an artifact to load it; orbit with the mouse. The inspector shows a
+1. **Add files.** There are three doors, and they mean different things:
+   * **SolidWorks / CAD** - `.sldprt`, `.sldasm`, `.slddrw`: the studio opens them,
+     reads their parameters and references, and shows their embedded preview.
+   * **STEP / STP** - neutral CAD: the studio reconstructs the build history from
+     the geometry.
+   * **Images** - pictures of finished parts, for the vision side.
+
+   Drop a whole batch onto a tile (or onto the viewport, where the lane is read
+   from each file's extension). The **Processing** panel shows every file going
+   queued → uploading → done, and each one appears in **Artifacts** the moment it
+   has been read.
+2. **Click an artifact** to load it; orbit with the mouse. The inspector shows a
    **How this was processed** tree: every stage from the upload to what was read
-   out of the file.
-3. Press *Register* under **Base models** to point the studio at a model.
-4. Tick artifacts, then *New dataset from selected*.
-5. Pick a model and a dataset, press **Start training run**, and watch the
-   stages, progress bar and live log on the right.
+   out of the file, and for SolidWorks documents the parameters and the documents
+   they reference.
+3. **Capture views** (in the viewport toolbar) renders four flat views of the
+   loaded part on a transparent background and lays them out as a drawing sheet
+   with a title block. Both go back into Artifacts, ready to train on.
+4. **Picture to steps** (right panel): drop in a picture and the studio writes the
+   build steps it implies, then *Rebuild this* turns them into real geometry you
+   can look at. This works with no model installed - it is the baseline your
+   training has to beat.
+5. Press *Register* under **Base models** to point the studio at a model.
+6. Tick artifacts, then *New dataset from selected*.
+7. Pick a model and a dataset, press **Start training run**, and watch the stages,
+   progress bar and live log on the right.
 
 ## See it work with no CAD files
 
@@ -61,15 +86,37 @@ cargo run -- --emit-samples samples
 Then upload all four in the studio. They are read exactly as a genuine
 SolidWorks file is, so the whole pipeline is visible without a licence.
 
-## Train for real
+## Train a model
 
-The pipeline ships with a simulation so the whole loop is visible. To run your
-own trainer instead, set `CADFORGE_TRAINER` - each run executes that command and
-streams its output into the run log. The run is passed as JSON in
-`CADFORGE_RUN`:
+The pipeline ships with a simulation so the whole loop is visible end to end. To
+train for real, install the Python stack once:
 
-```sh
-CADFORGE_TRAINER="python3 trainer/train.py" cargo run
+```bat
+scripts\setup-ml.cmd
+```
+
+then point the studio at the trainer:
+
+```bat
+set CADFORGE_TRAINER=python ml/train_vision.py
+run.cmd
+```
+
+Register a base model, build a dataset, press *Start training run*, and the log
+fills in live. The studio describes the dataset as picture/operation pairs and
+hands the trainer that manifest plus an output directory; that is the entire
+interface between the two.
+
+**Read [docs/TRAINING.md](docs/TRAINING.md) before planning a 4-billion-parameter
+run.** It has the memory budget for an 8 GB card, the settings that matter, which
+base models fit, how to install everything offline - and an honest account of what
+such a model can and cannot learn.
+
+To use a trained model in the studio:
+
+```bat
+set CADFORGE_VISION=python ml/predict.py
+set CADFORGE_ADAPTER=checkpoints\run1\adapter
 ```
 
 ## Reading STEP parts
@@ -120,17 +167,24 @@ geometry; it is the ground truth for training.
 | Variable | Default | Meaning |
 |---|---|---|
 | `CADFORGE_PORT` | `8787` | listen port |
-| `CADFORGE_DATA` | `data` | uploads and db.json |
+| `CADFORGE_DATA` | `data` | uploads, db.json, run manifests |
 | `CADFORGE_STATIC` | `static` | web GUI directory |
-| `CADFORGE_TRAINER` | unset | external trainer command |
+| `CADFORGE_NO_OPEN` | unset | set it to stop the browser opening by itself |
+| `CADFORGE_TRAINER` | unset | external trainer command; unset = built-in simulation |
+| `CADFORGE_VISION` | unset | external picture-to-steps command; unset = built-in baseline |
+| `CADFORGE_ADAPTER` | unset | adapter a vision command should load |
+| `CADFORGE_PYTHON` | auto | the Python to probe for the training stack |
 | `RUST_LOG` | `info` | log level |
 
 ## Layout
 
 ```
-src/main.rs       server, options, static files
+src/main.rs       server, options, opens the browser, sample documents
 src/api.rs        HTTP API + SSE
 src/model.rs      types and persistence
+src/system.rs     what the machine can do: GPU, Python, training stack
+src/vision.rs     picture -> build steps (the geometric baseline)
+src/dataset.rs    pairs pictures with the operations that make them
 src/pipeline.rs   the training pipeline and its stages
 src/ole.rs        OLE2 compound-file reader (+ writer, for tests and samples)
 src/sldworks.rs   SolidWorks documents: streams, preview, parameters, references
@@ -139,11 +193,12 @@ src/swhist.rs     SolidWorks feature-tree export -> build steps
 src/stl.rs        STL parser (ASCII + binary)
 src/step.rs       STEP (ISO 10303-21) reader + build-history reconstruction
 static/           the web GUI (plain JS + three.js, no build step)
-tools/make_step.py  generate STEP test parts
-tools/make_preview.py  freeze a running instance into one HTML file
-tools/solidworks/ExportFeatureTree.bas  export the real tree from SolidWorks
+ml/               training and inference scripts (optional, needs Python)
+docs/TRAINING.md  what a 4B model on a 3070 really takes
+scripts/          Windows helpers: ML setup
+tools/            STEP test-part generator, preview freezer, SolidWorks macro
+tests/ui_contract.rs  the interface contract: ids exist, routes match, no network
 run.cmd, run.sh   start it and open the browser
-tests/fixtures/   generated parts used by the tests
 ```
 
 ## Tests

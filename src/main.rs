@@ -3,6 +3,7 @@
 //! see them in a 3D viewport, and run the training pipeline end to end.
 
 mod api;
+mod dataset;
 mod freecad;
 mod model;
 mod ole;
@@ -15,7 +16,9 @@ mod solid;
 mod step;
 mod stl;
 mod swhist;
+mod system;
 mod vec3;
+mod vision;
 
 use model::{Asset, Db, Run};
 use std::path::PathBuf;
@@ -85,10 +88,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], opts.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("cadforge listening on http://{addr}");
+    let url = format!("http://localhost:{}", opts.port);
+    tracing::info!("cadforge listening on {url}");
     tracing::info!("data dir {}", opts.data.display());
+    open_browser_soon(url);
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Open the studio in the default browser, so a double-click on the launcher is
+/// all it takes. A few hundred milliseconds' grace lets the listener settle; if
+/// the browser is already open it simply becomes a new tab. `CADFORGE_NO_OPEN=1`
+/// turns it off, which is what a headless or scripted run wants.
+fn open_browser_soon(url: String) {
+    if std::env::var("CADFORGE_NO_OPEN").is_ok() {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        let result = if cfg!(target_os = "windows") {
+            // `start` is a cmd builtin, so it needs a shell; the empty title
+            // keeps it from treating the URL as the window title.
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", &url])
+                .spawn()
+        } else if cfg!(target_os = "macos") {
+            std::process::Command::new("open").arg(&url).spawn()
+        } else {
+            std::process::Command::new("xdg-open").arg(&url).spawn()
+        };
+        if let Err(e) = result {
+            tracing::info!("could not open a browser ({e}); open {url} yourself");
+        }
+    });
 }
 
 struct Options {

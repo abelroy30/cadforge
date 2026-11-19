@@ -8,8 +8,22 @@
 </head>
 <body>
 
+<!-- Every icon is defined once here and referenced by <use>. Keeping them inline
+     means the studio needs no icon font and fetches nothing to draw a button. -->
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-cad" viewBox="0 0 24 24"><path d="M12 2.6 20.5 7v10L12 21.4 3.5 17V7z"/><path d="M3.5 7 12 11.4 20.5 7"/><path d="M12 11.4v10"/></symbol>
+  <symbol id="i-step" viewBox="0 0 24 24"><path d="M6 2.8h7l5 5V21H6z"/><path d="M13 2.8V8h5"/><path d="M9 15h6M9 18h6"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.6"/><path d="M4 16.5 9.5 11l4 4 2.5-2.5L20.5 16"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3h16v-3"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.2"/></symbol>
+  <symbol id="i-draw" viewBox="0 0 24 24"><rect x="2.5" y="8" width="19" height="8" rx="1.5"/><path d="M6 8v3M10 8v3M14 8v3M18 8v3"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 9.3h16M4 14.7h16M9.3 4v16M14.7 4v16"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v4h-4"/></symbol>
+</svg>
+
 <header class="topbar">
-  <div class="brand"><span class="mark"></span><strong>cadforge</strong><span class="tag">CAD + AI studio</span></div>
+  <div class="brand"><span class="mark" aria-hidden="true"></span><strong>cadforge</strong><span class="tag">CAD + AI studio</span></div>
   <div class="topbar-right">
     <span class="pill" id="trainer-pill">trainer: …</span>
     <span class="pill" id="conn-pill" data-state="connecting"><i></i><span>connecting</span></span>
@@ -18,81 +32,144 @@
 
 <main class="workspace">
 
-  <aside class="panel left">
+  <!-- LEFT: files, then everything the studio has read out of them. -->
+  <aside class="panel left" aria-label="Files and artifacts">
+
     <section class="card">
-      <div class="card-head"><h2>Artifacts</h2>
-        <button class="mini" id="btn-upload">Upload</button></div>
-      <p class="hint">STL renders in the viewport. STEP keeps its build history. SolidWorks parts, assemblies and drawings are opened for their parameters. Drop a whole folder to upload in bulk.</p>
-      <div class="list" id="asset-list"></div>
-      <div class="card-foot">
-        <button class="mini outline" id="btn-dataset">New dataset from selected</button>
+      <div class="card-head"><h2>Add files</h2></div>
+      <p class="hint">Pick the lane that matches the file. Drop a whole batch on a tile, or click it to browse.</p>
+      <div class="lanes">
+        <button type="button" class="lane" id="lane-sldworks" data-lane="sldworks">
+          <span class="lane-top"><svg class="ic" aria-hidden="true"><use href="#i-cad"></use></svg><span class="lane-title">SolidWorks / CAD</span><span class="lane-ext">.sldprt .sldasm .slddrw</span></span>
+          <span class="lane-hint">parts, assemblies and drawings: the studio reads their parameters and references</span>
+        </button>
+        <button type="button" class="lane" id="lane-step" data-lane="step">
+          <span class="lane-top"><svg class="ic" aria-hidden="true"><use href="#i-step"></use></svg><span class="lane-title">STEP / STP</span><span class="lane-ext">.step .stp</span></span>
+          <span class="lane-hint">neutral CAD: the studio reconstructs the build history from the geometry</span>
+        </button>
+        <button type="button" class="lane" id="lane-image" data-lane="image">
+          <span class="lane-top"><svg class="ic" aria-hidden="true"><use href="#i-image"></use></svg><span class="lane-title">Images</span><span class="lane-ext">.png .jpg .jpeg .bmp .webp</span></span>
+          <span class="lane-hint">pictures of finished parts, for the vision side</span>
+        </button>
       </div>
     </section>
 
     <section class="card">
       <div class="card-head"><h2>Processing</h2>
-        <button class="mini outline" id="btn-clear-activity">Clear</button></div>
-      <p class="hint">Files are uploaded and read as they arrive, each one processed live.</p>
+        <button type="button" class="ghost mini" id="btn-clear-activity">Clear</button></div>
       <div class="list activity" id="activity-list"></div>
     </section>
 
     <section class="card">
-      <div class="card-head"><h2>Base models</h2>
-        <button class="mini" id="btn-model">Register</button></div>
-      <p class="hint">Point the studio at a model to adapt, or declare your own architecture.</p>
-      <div class="list" id="model-list"></div>
+      <div class="card-head"><h2>Artifacts</h2></div>
+      <p class="hint">Tick artifacts to build a dataset. Click a row to inspect it.</p>
+      <div class="chips" id="asset-filters">
+        <button type="button" class="chip on" data-filter="all">All</button>
+        <button type="button" class="chip" data-filter="sldworks">CAD</button>
+        <button type="button" class="chip" data-filter="step">STEP</button>
+        <button type="button" class="chip" data-filter="image">Images</button>
+        <button type="button" class="chip" data-filter="view">Views</button>
+        <button type="button" class="chip" data-filter="drawing">Drawings</button>
+        <button type="button" class="chip" data-filter="other">Other</button>
+      </div>
+      <div class="list" id="asset-list"></div>
+      <div class="card-foot">
+        <button type="button" class="ghost" id="btn-dataset">New dataset from selected</button>
+      </div>
     </section>
 
     <section class="card">
-      <h2>Datasets</h2>
+      <div class="card-head"><h2>Datasets</h2></div>
       <div class="list" id="dataset-list"></div>
     </section>
 
     <section class="card grow">
-      <h2>Runs</h2>
+      <div class="card-head"><h2>Runs</h2></div>
       <div class="list" id="run-list"></div>
     </section>
+
   </aside>
 
+  <!-- CENTRE: the 3D viewport always owns this column and fills it. -->
   <section class="viewport" id="viewport">
     <canvas id="scene"></canvas>
-    <div class="vp-toolbar">
-      <button class="tool active" data-view="shaded">Shaded</button>
-      <button class="tool" data-view="wire">Wire</button>
-      <button class="tool" data-view="both">Both</button>
+
+    <div class="vp-toolbar" id="vp-toolbar">
+      <button type="button" class="tool active" data-view="shaded">Shaded</button>
+      <button type="button" class="tool" data-view="wire">Wire</button>
+      <button type="button" class="tool" data-view="both">Both</button>
       <span class="sep"></span>
-      <button class="tool" id="btn-fit">Fit</button>
-      <button class="tool" id="btn-grid">Grid</button>
+      <button type="button" class="tool" id="btn-fit"><svg class="ic" aria-hidden="true"><use href="#i-fit"></use></svg>Fit</button>
+      <button type="button" class="tool" id="btn-grid"><svg class="ic" aria-hidden="true"><use href="#i-grid"></use></svg>Grid</button>
+      <span class="sep"></span>
+      <button type="button" class="tool tool-primary" id="btn-capture"><svg class="ic" aria-hidden="true"><use href="#i-camera"></use></svg>Capture views</button>
+      <button type="button" class="tool" id="btn-drawing"><svg class="ic" aria-hidden="true"><use href="#i-draw"></use></svg>Export drawing</button>
     </div>
+
+    <div class="view-strip" id="view-strip"></div>
     <div class="vp-readout" id="readout">no part loaded</div>
-    <div class="dropzone" id="dropzone"><div>Drop CAD files, images or video to upload — drop many at once</div></div>
+
+    <div class="dropzone" id="dropzone">
+      <div>Drop CAD files, STEP or images here to upload<span class="dz-sub">drop many at once — the lane is read from the extension</span></div>
+    </div>
   </section>
 
-  <aside class="panel right">
+  <!-- RIGHT: what the selection is, the vision test, and training. -->
+  <aside class="panel right" aria-label="Inspector and training">
+
     <section class="card">
-      <div class="card-head"><h2 id="inspector-title">Selection</h2></div>
-      <div id="props"><p class="hint">Select an artifact in the viewport tree.</p></div>
+      <div class="card-head"><h2 id="inspector-title">Inspector</h2></div>
+      <div id="props"><p class="hint">Select an artifact to see what is inside it.</p></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Picture to steps</h2></div>
+      <p class="hint">Give the studio a picture and it will guess the build steps, then you can rebuild them as geometry.</p>
+      <div class="vision-drop" id="vision-drop" role="button" tabindex="0">
+        <svg class="ic" aria-hidden="true"><use href="#i-image"></use></svg>
+        <span>Click to choose a picture, or drop one here</span>
+      </div>
+      <canvas id="vision-canvas" width="256" height="256"></canvas>
+      <p class="hint">The picture is scaled to fit 256 x 256 on a transparent background before it is sent.</p>
+      <button type="button" class="primary" id="vision-run">Show the steps</button>
+      <div class="status" id="vision-status">no picture chosen</div>
+      <div id="vision-result"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Base models</h2>
+        <button type="button" class="ghost mini" id="btn-model">Register</button></div>
+      <p class="hint">A model to adapt or fine-tune. Register one to make it available to a training run.</p>
+      <div class="list" id="model-list"></div>
     </section>
 
     <section class="card grow">
-      <div class="card-head"><h2>Training</h2><span class="pill small" id="run-pill">idle</span></div>
+      <div class="card-head"><h2>Training</h2>
+        <span class="pill small" id="run-pill">idle</span></div>
+      <div class="system" id="system-status"></div>
+      <div class="card-foot">
+        <button type="button" class="ghost mini" id="btn-refresh-system"><svg class="ic" aria-hidden="true"><use href="#i-refresh"></use></svg>Refresh system</button>
+      </div>
       <div class="run-form">
         <label>Base model<select id="sel-model"></select></label>
         <label>Dataset<select id="sel-dataset"></select></label>
-        <button class="primary" id="btn-run">Start training run</button>
+        <button type="button" class="primary" id="btn-run">Start training run</button>
       </div>
       <div class="progress-wrap">
         <div class="progress"><div class="bar" id="run-bar"></div></div>
         <div class="stage" id="run-stage">no run selected</div>
       </div>
+      <div class="run-actions"><button type="button" class="ghost mini" id="btn-cancel-run">Cancel run</button></div>
       <ol class="stages" id="stage-list"></ol>
       <pre class="console" id="run-log"></pre>
     </section>
+
   </aside>
 
 </main>
 
 <input type="file" id="file-input" multiple hidden />
+<input type="file" id="vision-input" accept="image/*" hidden />
 
 <script src="/vendor/three.min.js"></script>
 <script src="/vendor/OrbitControls.js"></script>
