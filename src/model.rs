@@ -65,6 +65,14 @@ pub struct Asset {
     /// is how the studio and the trainer tell a part from a picture of one.
     #[serde(default)]
     pub lane: String,
+    /// Set when the artifact was indexed from a folder rather than uploaded: the
+    /// absolute path of the file where it lives. Nothing is copied, so pointing
+    /// the studio at a 50 GB folder costs nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    /// The folder source this came from, when it came from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
     /// Triangle count, when the artifact is a mesh.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub triangles: Option<usize>,
@@ -95,7 +103,64 @@ impl Asset {
             AssetKind::SwPart | AssetKind::SwAssembly | AssetKind::SwDrawing
         )
     }
+
+    /// Where this artifact's bytes are. One accessor for the whole API, because
+    /// an indexed file stays where the user keeps it while an uploaded one lives
+    /// in the studio's own store.
+    pub fn bytes_path(&self, root: &Path) -> PathBuf {
+        match &self.source_path {
+            Some(p) => PathBuf::from(p),
+            None => assets_dir(root).join(format!("{}.{}", self.id, self.ext)),
+        }
+    }
+
+    /// Was this indexed in place rather than copied in?
+    pub fn is_referenced(&self) -> bool {
+        self.source_path.is_some()
+    }
 }
+
+/// A folder of training data the user pointed the studio at.
+///
+/// A source is an *index*, never a copy: files are read where they live, so
+/// pointing at a large folder costs nothing and removing a source never touches
+/// the user's files. The trade is that moving or renaming them behind the
+/// studio's back breaks the index, which is why a source can be re-scanned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Source {
+    pub id: String,
+    /// Absolute path to the folder.
+    pub path: String,
+    /// What to call it in the interface: the folder's own name unless the user
+    /// says otherwise.
+    pub label: String,
+    pub state: SourceState,
+    /// Files the last scan understood.
+    pub indexed: usize,
+    /// Files it walked past because nothing here reads them.
+    pub skipped: usize,
+    /// Total bytes of the indexed files: the honest 'physical size of the data'.
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_scan: Option<String>,
+    pub added_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceState {
+    Idle,
+    Scanning,
+    Ready,
+    Error,
+}
+
+/// How many folders one studio watches. Ten covers how people actually keep
+/// data - a parts library, a drawings share, a captures folder - without the
+/// panel turning into a file manager.
+pub const MAX_SOURCES: usize = 10;
 
 /// A base model the user points the studio at, or a model they define themselves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +224,9 @@ pub struct Run {
 pub struct Db {
     #[serde(default)]
     pub assets: Vec<Asset>,
+    /// Folders of training data. Referenced, never copied.
+    #[serde(default)]
+    pub sources: Vec<Source>,
     #[serde(default)]
     pub models: Vec<BaseModel>,
     #[serde(default)]

@@ -35,18 +35,40 @@
   <aside class="panel left" aria-label="Files and artifacts">
 
     <section class="card">
+      <div class="card-head"><h2>Data folders</h2></div>
+      <p class="hint">Point the studio at a folder of parts, drawings and pictures. Files are read
+        where they are: nothing is copied, and your files are never touched.</p>
+      <div class="source-add">
+        <input type="text" id="source-path" placeholder="/path/to/your/parts" spellcheck="false"
+               title="The full path of a folder. Absolute, because a relative path would mean a different folder every time it was scanned." />
+        <button type="button" class="primary" id="btn-source"
+                title="Add this folder and index what is in it now">Add folder</button>
+      </div>
+      <div class="list" id="source-list"></div>
+      <p class="hint small" id="source-count">no folders yet</p>
+    </section>
+
+    <section class="card">
       <div class="card-head"><h2>Add files</h2></div>
-      <p class="hint">Pick the lane that matches the file. Drop a whole batch on a tile, or click it to browse.</p>
+      <p class="hint">For one or two files: click a lane to browse, or drop files on it. A whole library
+        belongs in the folders above.</p>
+      <div class="card-foot">
+        <button type="button" class="ghost" id="btn-one-file"
+                title="Open a single part or drawing, and watch the studio read it step by step">Open one part or drawing&hellip;</button>
+      </div>
       <div class="lanes">
-        <button type="button" class="lane" id="lane-sldworks" data-lane="sldworks">
+        <button type="button" class="lane" id="lane-sldworks" data-lane="sldworks"
+                title="SolidWorks parts, assemblies and drawings. Their parameters and references are read directly; the feature tree is exported from SolidWorks itself.">
           <span class="lane-top"><svg class="ic" aria-hidden="true"><use href="#i-cad"></use></svg><span class="lane-title">SolidWorks / CAD</span><span class="lane-ext">.sldprt .sldasm .slddrw</span></span>
           <span class="lane-hint">parts, assemblies and drawings: the studio reads their parameters and references</span>
         </button>
-        <button type="button" class="lane" id="lane-step" data-lane="step">
+        <button type="button" class="lane" id="lane-step" data-lane="step"
+                title="Neutral CAD files. The build history is reconstructed from the geometry's B-rep.">
           <span class="lane-top"><svg class="ic" aria-hidden="true"><use href="#i-step"></use></svg><span class="lane-title">STEP / STP</span><span class="lane-ext">.step .stp</span></span>
           <span class="lane-hint">neutral CAD: the studio reconstructs the build history from the geometry</span>
         </button>
-        <button type="button" class="lane" id="lane-image" data-lane="image">
+        <button type="button" class="lane" id="lane-image" data-lane="image"
+                title="Pictures of finished parts. These are the inputs the vision side learns from.">
           <span class="lane-top"><svg class="ic" aria-hidden="true"><use href="#i-image"></use></svg><span class="lane-title">Images</span><span class="lane-ext">.png .jpg .jpeg .bmp .webp</span></span>
           <span class="lane-hint">pictures of finished parts, for the vision side</span>
         </button>
@@ -54,26 +76,32 @@
     </section>
 
     <section class="card">
-      <div class="card-head"><h2>Processing</h2>
-        <button type="button" class="ghost mini" id="btn-clear-activity">Clear</button></div>
+      <div class="card-head"><h2>Activity</h2>
+        <button type="button" class="ghost mini" id="btn-clear-activity" title="Clear this view. Nothing is deleted - it is only a window on what is happening.">Clear</button></div>
       <div class="list activity" id="activity-list"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Storage</h2>
+        <button type="button" class="ghost mini" id="btn-storage" title="Measure the data and the models again">Measure</button></div>
+      <div id="storage-box"><p class="hint">measuring&hellip;</p></div>
     </section>
 
     <section class="card">
       <div class="card-head"><h2>Artifacts</h2></div>
       <p class="hint">Tick artifacts to build a dataset. Click a row to inspect it.</p>
       <div class="chips" id="asset-filters">
-        <button type="button" class="chip on" data-filter="all">All</button>
-        <button type="button" class="chip" data-filter="sldworks">CAD</button>
-        <button type="button" class="chip" data-filter="step">STEP</button>
-        <button type="button" class="chip" data-filter="image">Images</button>
-        <button type="button" class="chip" data-filter="view">Views</button>
-        <button type="button" class="chip" data-filter="drawing">Drawings</button>
-        <button type="button" class="chip" data-filter="other">Other</button>
+        <button type="button" class="chip on" data-filter="all" title="Show every artifact">All</button>
+        <button type="button" class="chip" data-filter="sldworks" title="Show only SolidWorks documents">CAD</button>
+        <button type="button" class="chip" data-filter="step" title="Show only STEP files">STEP</button>
+        <button type="button" class="chip" data-filter="image" title="Show only pictures">Images</button>
+        <button type="button" class="chip" data-filter="view" title="Show only the views captured from the viewport">Views</button>
+        <button type="button" class="chip" data-filter="drawing" title="Show only the exported drawing sheets">Drawings</button>
+        <button type="button" class="chip" data-filter="other" title="Show the files nothing else claims">Other</button>
       </div>
       <div class="list" id="asset-list"></div>
       <div class="card-foot">
-        <button type="button" class="ghost" id="btn-dataset">New dataset from selected</button>
+        <button type="button" class="ghost" id="btn-dataset" title="Make a dataset from the artifacts you have ticked">New dataset from selected</button>
       </div>
     </section>
 
@@ -94,15 +122,15 @@
     <canvas id="scene"></canvas>
 
     <div class="vp-toolbar">
-      <button type="button" class="tool active" data-view="shaded">Shaded</button>
-      <button type="button" class="tool" data-view="wire">Wire</button>
-      <button type="button" class="tool" data-view="both">Both</button>
+      <button type="button" class="tool active" data-view="shaded" title="Draw the part as solid surfaces">Shaded</button>
+      <button type="button" class="tool" data-view="wire" title="Draw only the edges, so the structure is visible">Wire</button>
+      <button type="button" class="tool" data-view="both" title="Draw the surfaces with their edges on top">Both</button>
       <span class="sep"></span>
-      <button type="button" class="tool" id="btn-fit"><svg class="ic" aria-hidden="true"><use href="#i-fit"></use></svg>Fit</button>
-      <button type="button" class="tool" id="btn-grid"><svg class="ic" aria-hidden="true"><use href="#i-grid"></use></svg>Grid</button>
+      <button type="button" class="tool" id="btn-fit" title="Frame the part in the window"><svg class="ic" aria-hidden="true"><use href="#i-fit"></use></svg>Fit</button>
+      <button type="button" class="tool" id="btn-grid" title="Show or hide the ground grid"><svg class="ic" aria-hidden="true"><use href="#i-grid"></use></svg>Grid</button>
       <span class="sep"></span>
-      <button type="button" class="tool tool-primary" id="btn-capture"><svg class="ic" aria-hidden="true"><use href="#i-camera"></use></svg>Capture views</button>
-      <button type="button" class="tool" id="btn-drawing"><svg class="ic" aria-hidden="true"><use href="#i-draw"></use></svg>Export drawing</button>
+      <button type="button" class="tool tool-primary" id="btn-capture" title="Render four views of the part and keep them as pictures paired with it"><svg class="ic" aria-hidden="true"><use href="#i-camera"></use></svg>Capture views</button>
+      <button type="button" class="tool" id="btn-drawing" title="Lay the four views out on a drawing sheet with a title block"><svg class="ic" aria-hidden="true"><use href="#i-draw"></use></svg>Export drawing</button>
     </div>
 
     <div class="view-strip" id="view-strip"></div>
@@ -124,20 +152,21 @@
     <section class="card">
       <div class="card-head"><h2>Picture to steps</h2></div>
       <p class="hint">Give the studio a picture and it will guess the build steps, then you can rebuild them as geometry.</p>
-      <div class="vision-drop" id="vision-drop" role="button" tabindex="0">
+      <div class="vision-drop" id="vision-drop" role="button" tabindex="0"
+           title="Choose a picture of a part, or drop one here">
         <svg class="ic" aria-hidden="true"><use href="#i-image"></use></svg>
         <span>Click to choose a picture, or drop one here</span>
       </div>
       <canvas id="vision-canvas" width="256" height="256"></canvas>
       <p class="hint">The picture is scaled to fit 256 x 256 on a transparent background before it is sent.</p>
-      <button type="button" class="primary" id="vision-run">Show the steps</button>
+      <button type="button" class="primary" id="vision-run" title="Send the picture and show the build steps the studio infers from it">Show the steps</button>
       <div class="status" id="vision-status">no picture chosen</div>
       <div id="vision-result"></div>
     </section>
 
     <section class="card">
       <div class="card-head"><h2>Base models</h2>
-        <button type="button" class="ghost mini" id="btn-model">Register</button></div>
+        <button type="button" class="ghost mini" id="btn-model" title="Describe a base model the studio can adapt or fine-tune">Register</button></div>
       <p class="hint">A model to adapt or fine-tune. Register one to make it available to a training run.</p>
       <div class="list" id="model-list"></div>
     </section>
@@ -147,18 +176,18 @@
         <span class="pill small" id="run-pill">idle</span></div>
       <div class="system" id="system-status"></div>
       <div class="card-foot">
-        <button type="button" class="ghost mini" id="btn-refresh-system"><svg class="ic" aria-hidden="true"><use href="#i-refresh"></use></svg>Refresh system</button>
+        <button type="button" class="ghost mini" id="btn-refresh-system" title="Check this machine's graphics card, Python and trainer again"><svg class="ic" aria-hidden="true"><use href="#i-refresh"></use></svg>Refresh system</button>
       </div>
       <div class="run-form">
         <label>Base model<select id="sel-model"></select></label>
         <label>Dataset<select id="sel-dataset"></select></label>
-        <button type="button" class="primary" id="btn-run">Start training run</button>
+        <button type="button" class="primary" id="btn-run" title="Start a training run on the selected model and dataset">Start training run</button>
       </div>
       <div class="progress-wrap">
         <div class="progress"><div class="bar" id="run-bar"></div></div>
         <div class="stage" id="run-stage">no run selected</div>
       </div>
-      <div class="run-actions"><button type="button" class="ghost mini" id="btn-cancel-run">Cancel run</button></div>
+      <div class="run-actions"><button type="button" class="ghost mini" id="btn-cancel-run" title="Stop the run that is going">Cancel run</button></div>
       <ol class="stages" id="stage-list"></ol>
       <pre class="console" id="run-log"></pre>
     </section>

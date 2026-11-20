@@ -486,11 +486,13 @@ mod tests {
     fn app(dir: &std::path::Path) -> Arc<App> {
         let (bus, _) = tokio::sync::broadcast::channel(64);
         let (asset_bus, _) = tokio::sync::broadcast::channel(64);
+        let (work_bus, _) = tokio::sync::broadcast::channel(64);
         Arc::new(App {
             root: dir.to_path_buf(),
             db: Mutex::new(Db::default()),
             bus,
             asset_bus,
+            work_bus,
         })
     }
 
@@ -507,6 +509,8 @@ mod tests {
             size: 10,
             uploaded_at: crate::model::now(),
             lane,
+            source_path: None,
+            source_id: None,
             triangles: None,
             bbox: None,
             header: None,

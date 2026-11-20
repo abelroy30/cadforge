@@ -1,9 +1,9 @@
 //! HTTP API. JSON in, JSON out; one SSE stream carries live run progress.
 
 use crate::model::{
-    classify, lane_for, now, Action, Asset, AssetKind, BaseModel, Dataset, Db, Run, RunStatus,
+    now, Asset, BaseModel, Dataset, Db, Run, RunStatus, Source, SourceState, MAX_SOURCES,
 };
-use crate::{stl, App};
+use crate::{ingest, stl, App};
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -53,298 +53,9 @@ async fn upload_asset(
     Query(q): Query<UploadQuery>,
     body: Bytes,
 ) -> Result<Json<Asset>, ApiError> {
-    if body.is_empty() {
-        return Err(ApiError::bad_request("uploaded file is empty"));
-    }
-    let name = safe_name(&q.name);
-    let (ext, kind) = classify(&name);
-    let lane = q
-        .lane
-        .filter(|l| !l.trim().is_empty())
-        .unwrap_or_else(|| lane_for(&ext, &kind).to_string());
-    let id = uuid::Uuid::new_v4().to_string();
-
-    let dir = crate::model::assets_dir(&app.root);
-    std::fs::create_dir_all(&dir).map_err(ApiError::internal)?;
-    let path = dir.join(format!("{id}.{ext}"));
-    std::fs::write(&path, &body).map_err(ApiError::internal)?;
-
-    let mut asset = Asset {
-        id: id.clone(),
-        name,
-        ext,
-        kind: kind.clone(),
-        size: body.len() as u64,
-        uploaded_at: now(),
-        lane,
-        triangles: None,
-        bbox: None,
-        header: None,
-        step: None,
-        catalogue: None,
-        actions: Vec::new(),
-    };
-
-    match kind {
-        AssetKind::Mesh => match stl::parse(&body) {
-            Ok(mesh) => {
-                asset.triangles = Some(mesh.triangles);
-                asset.bbox = Some(mesh.bbox);
-            }
-            Err(e) => return Err(ApiError::bad_request(format!("could not read STL: {e}"))),
-        },
-        AssetKind::Step => {
-            asset.header = Some(step_header(&body));
-            match crate::step::analyze(&String::from_utf8_lossy(&body)) {
-                Ok(analysis) => asset.step = Some(analysis.summary),
-                Err(e) => tracing::warn!("could not read STEP geometry: {e}"),
-            }
-        }
-        AssetKind::SwPart | AssetKind::SwAssembly | AssetKind::SwDrawing => {
-            // A document we can open: read the container, keep the preview image,
-            // and record what is inside it.
-            match crate::sldworks::inspect(&body, &asset.ext) {
-                Ok(inspected) => {
-                    asset.header = Some(inspected.catalogue.headline());
-                    if let Some(preview) = &inspected.preview {
-                        let path = crate::model::preview_path(&app.root, &asset.id);
-                        if let Err(e) = std::fs::write(&path, &preview.bytes) {
-                            tracing::warn!("could not store preview for {}: {e}", asset.name);
-                        }
-                    }
-                    asset.catalogue = Some(inspected.catalogue);
-                }
-                Err(e) => {
-                    // Keep the file - the user uploaded it - but say plainly that
-                    // it could not be read.
-                    asset.header = Some(format!("could not be read as a document: {e}"));
-                    tracing::warn!("could not read {}: {e}", asset.name);
-                }
-            }
-        }
-        AssetKind::History => {
-            // A feature tree exported from inside SolidWorks. This is the true
-            // modelling history, not an inference from geometry.
-            match crate::swhist::parse(&String::from_utf8_lossy(&body)) {
-                Ok(export) => {
-                    let summary = crate::swhist::summary(&export);
-                    let n = summary.steps.len().saturating_sub(1);
-                    asset.header = Some(format!(
-                        "{} - {} feature{} exported from SolidWorks",
-                        if export.document.is_empty() {
-                            "feature tree"
-                        } else {
-                            export.document.as_str()
-                        },
-                        n,
-                        if n == 1 { "" } else { "s" }
-                    ));
-                    asset.step = Some(summary);
-                }
-                Err(e) => {
-                    return Err(ApiError::bad_request(format!(
-                        "could not read history export: {e}"
-                    )));
-                }
-            }
-        }
-        _ => {}
-    }
-
-    let mut db = app.db.lock().unwrap();
-    asset.actions = actions_for(&asset);
-    db.assets.push(asset.clone());
-    db.save(&app.root).map_err(ApiError::internal)?;
-    drop(db);
-    // Tell every open studio that a new artifact is ready, so the list fills in
-    // live as a bulk upload lands rather than only on the next refresh.
-    let _ = app.asset_bus.send(asset.clone());
+    let asset =
+        ingest::upload(&app, &q.name, q.lane.clone(), &body).map_err(ApiError::bad_request)?;
     Ok(Json(asset))
-}
-
-/// A step-by-step account of how an artifact was processed, for every kind, so
-/// the studio can draw the whole path as a tree. Nothing about an upload is
-/// hidden: what was read, what was found, and where each value came from.
-fn actions_for(asset: &Asset) -> Vec<Action> {
-    let mut root = vec![Action::new(
-        "upload",
-        format!("{} (.{}) · {} KB", asset.name, asset.ext, asset.size / 1024),
-    )];
-
-    match asset.kind {
-        AssetKind::Mesh => {
-            if let (Some(triangles), Some(b)) = (asset.triangles, asset.bbox) {
-                root.push(
-                    Action::new("read mesh", format!("{triangles} triangles")).with(vec![
-                        Action::new(
-                            "bounds",
-                            format!(
-                                "{:.2} × {:.2} × {:.2}",
-                                b[3] - b[0],
-                                b[4] - b[1],
-                                b[5] - b[2]
-                            ),
-                        ),
-                    ]),
-                );
-            }
-        }
-        AssetKind::Step => {
-            if let Some(header) = &asset.header {
-                root.push(Action::new("read header", header.clone()));
-            }
-            if let Some(s) = &asset.step {
-                root.push(
-                    Action::new(
-                        "reconstruct history",
-                        format!(
-                            "from the B-rep: {} faces, {} edges, {} vertices",
-                            s.faces, s.edges, s.vertices
-                        ),
-                    )
-                    .with(
-                        s.steps
-                            .iter()
-                            .map(|l| Action::new(l.op.clone(), l.detail.clone()))
-                            .collect(),
-                    ),
-                );
-            }
-        }
-        AssetKind::History => {
-            if let Some(s) = &asset.step {
-                root.push(
-                    Action::new(
-                        "read recording",
-                        "the feature tree exactly as SolidWorks recorded it",
-                    )
-                    .with(
-                        s.steps
-                            .iter()
-                            .map(|l| Action::new(l.op.clone(), l.detail.clone()))
-                            .collect(),
-                    ),
-                );
-            }
-        }
-        AssetKind::SwPart | AssetKind::SwAssembly | AssetKind::SwDrawing => {
-            match &asset.catalogue {
-                Some(c) => {
-                    root.push(Action::new("open container", c.container.clone()));
-
-                    let total: usize = c.metadata.iter().map(|g| g.properties.len()).sum();
-                    if total > 0 {
-                        let groups: Vec<Action> = c
-                            .metadata
-                            .iter()
-                            .filter(|g| !g.properties.is_empty())
-                            .map(|g| {
-                                let label = match g.group.as_str() {
-                                    "summary" => "SummaryInformation",
-                                    "document" => "DocumentSummaryInformation",
-                                    "custom" => "custom properties (user-defined)",
-                                    other => other,
-                                };
-                                Action::new(label, format!("{} parameter(s)", g.properties.len()))
-                                    .with(
-                                        g.properties
-                                            .iter()
-                                            .map(|p| Action::new(p.name.clone(), p.value.clone()))
-                                            .collect(),
-                                    )
-                            })
-                            .collect();
-                        root.push(
-                            Action::new("read parameters", format!("{total} parameter(s)"))
-                                .with(groups),
-                        );
-                    } else {
-                        root.push(Action::new(
-                            "read parameters",
-                            "no parameters stored in this file",
-                        ));
-                    }
-
-                    if !c.references.is_empty() {
-                        root.push(
-                            Action::new(
-                                "resolve references",
-                                format!("{} document(s)", c.references.len()),
-                            )
-                            .with(
-                                c.references
-                                    .iter()
-                                    .map(|r| {
-                                        Action::new(
-                                            r.name.clone(),
-                                            format!("found in `{}`", r.stream),
-                                        )
-                                    })
-                                    .collect(),
-                            ),
-                        );
-                    }
-
-                    let streams: Vec<Action> = c
-                        .streams
-                        .iter()
-                        .map(|s| {
-                            Action::new(
-                                s.name.clone(),
-                                format!("{} · {} KB", s.role, s.size / 1024),
-                            )
-                        })
-                        .collect();
-                    root.push(
-                        Action::new("list streams", format!("{} stream(s)", c.streams.len()))
-                            .with(streams),
-                    );
-
-                    if let Some(p) = &c.preview {
-                        root.push(Action::new(
-                            "extract preview",
-                            format!("{} from `{}`", p.content_type, p.stream),
-                        ));
-                    }
-                }
-                None => {
-                    if let Some(header) = &asset.header {
-                        root.push(Action::new("open container", header.clone()));
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-    root
-}
-
-fn safe_name(raw: &str) -> String {
-    std::path::Path::new(raw)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("upload")
-        .to_string()
-}
-
-/// Pull the schema and product name out of a STEP header.
-fn step_header(bytes: &[u8]) -> String {
-    let head: String = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).into();
-    let mut parts = Vec::new();
-    for key in ["FILE_NAME", "FILE_SCHEMA", "FILE_DESCRIPTION"] {
-        if let Some(rest) = head.split(key).nth(1) {
-            if let Some(inner) = rest.split('\'').nth(1) {
-                if !inner.trim().is_empty() {
-                    parts.push(format!("{key}: {}", inner.trim()));
-                }
-            }
-        }
-    }
-    if parts.is_empty() {
-        "STEP part (no header parsed)".into()
-    } else {
-        parts.join("\n")
-    }
 }
 
 /// The stream catalogue of a stored document.
@@ -376,7 +87,7 @@ async fn asset_streams(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let path = crate::model::assets_dir(&app.root).join(format!("{}.{}", asset.id, asset.ext));
+    let path = asset.bytes_path(&app.root);
     let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
     let inspected = crate::sldworks::inspect(&bytes, &ext).map_err(ApiError::bad_request)?;
 
@@ -388,7 +99,7 @@ async fn asset_streams(
     let updated = if let Some(a) = db.assets.iter_mut().find(|a| a.id == asset.id) {
         a.catalogue = Some(inspected.catalogue.clone());
         a.header = Some(inspected.catalogue.headline());
-        a.actions = actions_for(a);
+        a.actions = ingest::actions_for(a);
         Some(a.clone())
     } else {
         None
@@ -439,10 +150,7 @@ async fn asset_mesh(
     let (path, meta) = {
         let db = app.db.lock().unwrap();
         let asset = db.asset(&id).ok_or_else(|| ApiError::not_found("asset"))?;
-        (
-            crate::model::assets_dir(&app.root).join(format!("{}.{}", asset.id, asset.ext)),
-            asset.clone(),
-        )
+        (asset.bytes_path(&app.root), asset.clone())
     };
     let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
     let mesh = stl::parse(&bytes).map_err(ApiError::bad_request)?;
@@ -587,10 +295,7 @@ async fn rebuild(
 fn asset_path(app: &App, id: &str) -> Result<(std::path::PathBuf, String), ApiError> {
     let db = app.db.lock().unwrap();
     let asset = db.asset(id).ok_or_else(|| ApiError::not_found("asset"))?;
-    Ok((
-        crate::model::assets_dir(&app.root).join(format!("{}.{}", asset.id, asset.ext)),
-        asset.name.clone(),
-    ))
+    Ok((asset.bytes_path(&app.root), asset.name.clone()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -647,10 +352,7 @@ async fn asset_history(
     let (path, meta) = {
         let db = app.db.lock().unwrap();
         let asset = db.asset(&id).ok_or_else(|| ApiError::not_found("asset"))?;
-        (
-            crate::model::assets_dir(&app.root).join(format!("{}.{}", asset.id, asset.ext)),
-            asset.clone(),
-        )
+        (asset.bytes_path(&app.root), asset.clone())
     };
     let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
     let analysis =
@@ -678,10 +380,7 @@ async fn asset_file(
     let (path, name) = {
         let db = app.db.lock().unwrap();
         let asset = db.asset(&id).ok_or_else(|| ApiError::not_found("asset"))?;
-        (
-            crate::model::assets_dir(&app.root).join(format!("{}.{}", asset.id, asset.ext)),
-            asset.name.clone(),
-        )
+        (asset.bytes_path(&app.root), asset.name.clone())
     };
     let bytes = std::fs::read(&path).map_err(|_| ApiError::not_found("asset file"))?;
     Ok((
@@ -699,9 +398,9 @@ async fn delete_asset(
 ) -> Result<StatusCode, ApiError> {
     let mut db = app.db.lock().unwrap();
     let before = db.assets.len();
-    let ext = db
+    let (ext, referenced) = db
         .asset(&id)
-        .map(|a| a.ext.clone())
+        .map(|a| (a.ext.clone(), a.is_referenced()))
         .ok_or_else(|| ApiError::not_found("asset"))?;
     db.assets.retain(|a| a.id != id);
     if db.assets.len() == before {
@@ -713,8 +412,12 @@ async fn delete_asset(
     db.save(&app.root).map_err(ApiError::internal)?;
     drop(db);
 
-    // Take the files with the record, including any extracted preview.
-    let _ = std::fs::remove_file(crate::model::assets_dir(&app.root).join(format!("{id}.{ext}")));
+    // Take the files with the record - but only the ones this studio owns. A
+    // referenced file lives in the user's own folder and is left alone.
+    if !referenced {
+        let _ =
+            std::fs::remove_file(crate::model::assets_dir(&app.root).join(format!("{id}.{ext}")));
+    }
     let _ = std::fs::remove_file(crate::model::preview_path(&app.root, &id));
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1070,6 +773,163 @@ async fn export_dataset(
     Ok(Json(manifest))
 }
 
+#[derive(Deserialize)]
+struct NewSource {
+    path: String,
+    #[serde(default)]
+    label: String,
+}
+
+/// Point the studio at a folder of training data.
+///
+/// Nothing is copied: the folder is recorded and scanned, and its files become
+/// artifacts that point back at where they live. Only the folder is checked
+/// here - what it holds is the scan's business, and the scan reports as it goes.
+async fn create_source(
+    State(app): State<Arc<App>>,
+    Json(body): Json<NewSource>,
+) -> Result<Json<Source>, ApiError> {
+    let raw = body.path.trim();
+    if raw.is_empty() {
+        return Err(ApiError::bad_request("a source needs a folder path"));
+    }
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() {
+        return Err(ApiError::bad_request(
+            "give an absolute path, so the folder means the same thing every time it is scanned",
+        ));
+    }
+    if !path.is_dir() {
+        return Err(ApiError::bad_request(format!(
+            "{} is not a folder",
+            path.display()
+        )));
+    }
+    let label = if body.label.trim().is_empty() {
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("source")
+            .to_string()
+    } else {
+        body.label.trim().to_string()
+    };
+
+    let source = {
+        let mut db = app.db.lock().unwrap();
+        if db.sources.len() >= MAX_SOURCES {
+            return Err(ApiError::bad_request(format!(
+                "{MAX_SOURCES} folders is the limit - remove one first"
+            )));
+        }
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let wanted = canonical.to_string_lossy().to_string();
+        if db.sources.iter().any(|s| s.path == wanted) {
+            return Err(ApiError::bad_request("that folder is already a source"));
+        }
+        let source = Source {
+            id: uuid::Uuid::new_v4().to_string(),
+            path: wanted,
+            label,
+            state: SourceState::Idle,
+            indexed: 0,
+            skipped: 0,
+            bytes: 0,
+            error: None,
+            last_scan: None,
+            added_at: now(),
+        };
+        db.sources.push(source.clone());
+        db.save(&app.root).map_err(ApiError::internal)?;
+        source
+    };
+
+    // Index it straight away: pointing at a folder and seeing nothing happen
+    // would be its own kind of lie.
+    start_scan(app.clone(), source.id.clone());
+    Ok(Json(source))
+}
+
+/// Remove a source and forget the artifacts it indexed. The files themselves
+/// belong to the user and are left exactly where they are.
+async fn delete_source(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut db = app.db.lock().unwrap();
+    if !db.sources.iter().any(|s| s.id == id) {
+        return Err(ApiError::not_found("source"));
+    }
+    db.sources.retain(|s| s.id != id);
+    let keep: Vec<Asset> = db
+        .assets
+        .iter()
+        .filter(|a| a.source_id.as_deref() != Some(id.as_str()))
+        .cloned()
+        .collect();
+    let dropped = db.assets.len() - keep.len();
+    db.assets = keep;
+    db.save(&app.root).map_err(ApiError::internal)?;
+    drop(db);
+    tracing::info!("source {id} removed; {dropped} artifact record(s) forgotten");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Re-read a folder. This is also the answer to 'I have added files since'.
+async fn scan_source(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Json<Source>, ApiError> {
+    let source = {
+        let db = app.db.lock().unwrap();
+        db.sources
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found("source"))?
+    };
+    if source.state == SourceState::Scanning {
+        return Err(ApiError::bad_request(
+            "that folder is already being scanned",
+        ));
+    }
+    start_scan(app.clone(), id);
+    Ok(Json(source))
+}
+
+/// Run a scan off the request path. The reply is immediate and the progress
+/// arrives on the work stream, because a folder of thousands of files would
+/// otherwise hold the request open for minutes with nothing to show.
+fn start_scan(app: Arc<App>, id: String) {
+    tokio::task::spawn_blocking(move || crate::ingest::scan_worker(app, id));
+}
+
+/// What the data and the models weigh.
+async fn storage(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    let report = {
+        let db = app.db.lock().unwrap();
+        ingest::storage_report(&app.root, &db)
+    };
+    Json(report)
+}
+
+/// Live ingest progress: folders being walked, files being read. One event per
+/// file, so the interface can show work happening rather than a spinner.
+async fn work_events(
+    State(app): State<Arc<App>>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let rx = app.work_bus.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|item| async move {
+        match item {
+            Ok(work) => {
+                let data = serde_json::to_string(&work).unwrap_or_default();
+                Some(Ok(Event::default().event("work").data(data)))
+            }
+            Err(_) => None,
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 pub fn router(app: Arc<App>) -> axum::Router {
     use axum::extract::DefaultBodyLimit;
     use axum::routing::{delete, get, post};
@@ -1097,6 +957,11 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/api/datasets/{id}/export", get(export_dataset))
         .route("/api/runs", post(create_run))
         .route("/api/runs/{id}/cancel", post(cancel_run))
+        .route("/api/sources", post(create_source))
+        .route("/api/sources/{id}", delete(delete_source))
+        .route("/api/sources/{id}/scan", post(scan_source))
+        .route("/api/storage", get(storage))
+        .route("/api/work/events", get(work_events))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         .with_state(app)
 }

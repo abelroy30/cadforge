@@ -5,6 +5,7 @@
 mod api;
 mod dataset;
 mod freecad;
+mod ingest;
 mod model;
 mod ole;
 mod ops;
@@ -35,6 +36,9 @@ pub struct App {
     /// Fan-out channel for live artifact updates: every artifact the moment it
     /// has been processed, so the studio's list fills in as uploads land.
     pub asset_bus: broadcast::Sender<Asset>,
+    /// Fan-out channel for ingest progress: folders being walked and files being
+    /// read, so the interface shows the work rather than only its outcome.
+    pub work_bus: broadcast::Sender<crate::ingest::WorkEvent>,
 }
 
 #[tokio::main]
@@ -67,11 +71,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::load(&opts.data);
     let (bus, _) = broadcast::channel(512);
     let (asset_bus, _) = broadcast::channel(512);
+    let (work_bus, _) = broadcast::channel(1024);
     let app = std::sync::Arc::new(App {
         root: opts.data.clone(),
         db: Mutex::new(db),
         bus,
         asset_bus,
+        work_bus,
     });
 
     let static_dir = opts.static_dir;

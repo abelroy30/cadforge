@@ -250,6 +250,8 @@ mod tests {
             size: 0,
             uploaded_at: String::new(),
             lane: lane.into(),
+            source_path: None,
+            source_id: None,
             triangles: None,
             bbox: None,
             header: None,

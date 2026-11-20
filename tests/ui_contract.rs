@@ -124,7 +124,7 @@ fn path_fragments_the_script_builds_are_not_typos() {
     // Fragments are the `/mesh`, `/history`, `/preview` halves of a concatenated
     // URL. Each one has to appear in some registered route.
     for fragment in [
-        "/mesh", "/history", "/preview", "/streams", "/file", "/cancel",
+        "/mesh", "/history", "/preview", "/streams", "/file", "/cancel", "/scan",
     ] {
         if js.contains(&format!("\"{fragment}\"")) {
             assert!(
@@ -147,6 +147,11 @@ fn the_page_is_completely_offline() {
                     || trimmed.starts_with('*')
                     || trimmed.starts_with("/*")
                     || trimmed.starts_with('#');
+                // The SVG namespace is an identifier, not an address: nothing is
+                // ever fetched from it. It is stripped before the check rather than
+                // the check being loosened, so every other URL is still caught.
+                let line = line.replace("http://www.w3.org/2000/svg", "");
+                let line = line.as_str();
                 assert!(
                     commented || !line.contains(needle),
                     "{file}:{} reaches the network: {needle}",
@@ -300,6 +305,87 @@ fn the_artifact_filters_name_real_lanes() {
         assert!(
             known.contains(&filter.as_str()),
             "static/index.html filters by {filter:?}, which is not a lane: {known:?}"
+        );
+    }
+}
+
+/// Every icon the page or the script reaches for has to be one the sprite
+/// actually defines. A missing symbol draws nothing at all: an empty button with
+/// no error anywhere, which is the kind of bug only a person looking at it finds.
+#[test]
+fn every_icon_used_is_one_the_sprite_defines() {
+    let html = read("static/index.html");
+    let js = read("static/app.js");
+
+    let mut defined: BTreeSet<String> = BTreeSet::new();
+    let mut i = 0;
+    while let Some(rel) = html[i..].find("<symbol id=\"") {
+        let start = i + rel + 12;
+        match html[start..].find('"') {
+            Some(len) => {
+                defined.insert(format!("#{}", &html[start..start + len]));
+                i = start + len;
+            }
+            None => break,
+        }
+    }
+    assert!(!defined.is_empty(), "the page defines no icons at all");
+
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    for text in [&html, &js] {
+        let mut j = 0;
+        while let Some(rel) = text[j..].find("\"#i-") {
+            let start = j + rel + 1;
+            match text[start..].find('"') {
+                Some(len) => {
+                    used.insert(text[start..start + len].to_string());
+                    j = start + len;
+                }
+                None => break,
+            }
+        }
+    }
+    assert!(!used.is_empty(), "nothing refers to an icon");
+
+    let missing: Vec<&String> = used.difference(&defined).collect();
+    assert!(
+        missing.is_empty(),
+        "these icons are referenced but never defined in the sprite: {missing:?}"
+    );
+}
+
+/// Every control says what it does on hover.
+///
+/// The studio asks a person to point it at their folders and to start training
+/// runs; a bare label is not enough for either. A title on every control is the
+/// difference between an interface and a wall of buttons, so it is checked here
+/// rather than left to whoever remembers.
+#[test]
+fn every_button_explains_itself_on_hover() {
+    let html = read("static/index.html");
+    let mut checked = 0;
+    let mut i = 0;
+    while let Some(rel) = html[i..].find("<button") {
+        let start = i + rel;
+        let end = start + html[start..].find('>').expect("unterminated button tag");
+        let tag = &html[start..end];
+        assert!(
+            tag.contains("title="),
+            "this button explains nothing on hover:\n  {tag}"
+        );
+        checked += 1;
+        i = end;
+    }
+    assert!(checked >= 15, "only found {checked} buttons to check");
+
+    // The drop target is a div standing in for a button, so it is held to the
+    // same rule.
+    for id in ["vision-drop"] {
+        let at = html.find(&format!("id=\"{id}\"")).expect("no drop target");
+        let end = at + html[at..].find('>').unwrap();
+        assert!(
+            html[at..end].contains("title="),
+            "{id} explains nothing on hover"
         );
     }
 }

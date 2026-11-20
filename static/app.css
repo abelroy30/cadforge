@@ -301,3 +301,40 @@ table.streams td.num{text-align:right;white-space:nowrap;}
   .panel.right{border-top:1px solid var(--line);}
   .viewport{min-height:60vh;}
 }
+
+/* ---------------------------------------------------------- data folders */
+
+/* The path box and its button share one line: pointing at a folder should be a
+   single gesture, not a form. */
+.source-add{display:flex;gap:6px;margin-bottom:8px;}
+.source-add input{
+  flex:1;min-width:0;background:#0d1116;color:var(--ink);border:1px solid var(--line-2);
+  border-radius:var(--radius-sm);padding:6px 8px;font:11.5px var(--mono);
+}
+.source-add input:focus{outline:none;border-color:var(--accent);}
+.source-add input::placeholder{color:#5b6673;}
+.source-add button{white-space:nowrap;}
+
+.row.source{align-items:flex-start;cursor:default;}
+.row.source:hover{background:#1a2029;border-color:var(--line-2);}
+.row.source .path{
+  font:10.5px var(--mono);color:var(--muted);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;
+}
+.row.source .meta{font:10.5px var(--mono);color:var(--muted);margin-top:2px;}
+.row.source.scanning{border-color:var(--accent);}
+.row.source.scanning .meta{color:var(--accent);}
+.row.source.error{border-color:var(--err);}
+
+.hint.small{font-size:10.5px;}
+
+/* An icon-only button has to say what it does on hover, and be big enough to
+   hit. Without this a row of them is a wall of glyphs with no way to tell them
+   apart. */
+.row button.mini{padding:3px 5px;line-height:0;}
+.row button.mini .ic{width:13px;height:13px;}
+
+/* Work in progress reads differently from a finished upload. */
+.activity .row.walking .status,
+.activity .row.reading .status{color:var(--accent);border-color:var(--accent);}
+.activity .row.skipped .status{color:var(--warn);border-color:var(--warn);}

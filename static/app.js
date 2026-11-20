@@ -2,7 +2,7 @@
    beyond this same origin: three.js and OrbitControls are already global. */
 const $ = (sel) => document.querySelector(sel);
 
-const STATE = { assets: [], models: [], datasets: [], runs: [] };
+const STATE = { assets: [], sources: [], models: [], datasets: [], runs: [] };
 const TICKED = new Set();          // artifact checkboxes ticked for a new dataset
 let selectedAssetId = null;
 let activeRunId = null;
@@ -154,10 +154,12 @@ function el(tag, cls, text) {
 async function refresh() {
   Object.assign(STATE, await api("/api/state"));
   renderAssets();
+  renderSources();
   renderModels();
   renderDatasets();
   renderRuns();
   renderPickers();
+  try { await renderStorage(); } catch (_) { /* the panel says so itself */ }
 }
 
 /* ------------------------------------------------------------------- lists */
@@ -551,27 +553,42 @@ function renderRebuild(r, box) {
 
 /* ------------------------------------------------------------------ upload */
 
-/* Each file in a bulk upload gets a row here, and the row keeps up with what is
+/* Each file the studio uploads gets a row here, and the row keeps up with what is
    happening to it: queued, uploading, then done the moment the server has read
    the file and pushed the artifact back over the asset stream. */
 const UPLOADS = [];
 
+/* What is happening to folders and files right now, from the work stream: every
+   folder the studio walks and every file it reads, as it reads it. Newest first
+   and capped, because this is a window on background work rather than a log to
+   keep. */
+const WORK = [];
+const WORK_LIMIT = 200;
+
+function activityRow(name, status, detail) {
+  const row = el("div", "row " + status);
+  const col = el("div", "col");
+  col.append(el("div", "name", name));
+  if (detail) col.append(el("div", "err", detail));
+  row.append(col);
+  row.append(el("span", "status", status));
+  return row;
+}
+
+/* One feed for both kinds of work, in the order it happened. A folder scan and
+   an upload are the same thing to a person watching: something is being read. */
 function renderActivity() {
   const list = $("#activity-list");
   list.textContent = "";
-  if (!UPLOADS.length) {
-    list.append(el("div", "empty", "No uploads yet."));
+  const rows = [
+    ...WORK.map((w) => ({ name: w.name, status: w.stage, detail: w.detail, at: w.at || 0 })),
+    ...UPLOADS.map((u) => ({ name: u.name, status: u.status, detail: u.detail, at: u.at || 0 })),
+  ].sort((a, b) => b.at - a.at).slice(0, 80);
+  if (!rows.length) {
+    list.append(el("div", "empty", "Nothing happening yet. Add a folder, or drop a file on a lane."));
     return;
   }
-  UPLOADS.slice(0, 80).forEach((u) => {
-    const row = el("div", "row " + u.status);
-    const col = el("div", "col");
-    col.append(el("div", "name", u.name));
-    if (u.detail) col.append(el("div", "err", u.detail));
-    row.append(col);
-    row.append(el("span", "status", u.status));
-    list.append(row);
-  });
+  rows.forEach((r) => list.append(activityRow(r.name, r.status, r.detail)));
 }
 
 /* A file the server has just finished reading: flip its row to done. */
@@ -617,6 +634,7 @@ async function uploadFiles(files, lane) {
     lane: lane || laneFor(f.name),
     status: "queued",
     detail: "",
+    at: Date.now(),
   }));
   if (!queued.length) return;
   UPLOADS.unshift(...queued);
@@ -1060,6 +1078,166 @@ function connectEvents() {
   });
 }
 
+/* --------------------------------------------------------------- storage */
+
+/* Bytes in the units a person reads. The studio measures the data and estimates
+   the models, and this is where both are shown - with the difference visible. */
+function sizeText(bytes) {
+  if (bytes == null) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = bytes, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
+}
+
+/* An icon-only button that says what it does on hover and to a screen reader,
+   which is the whole point of a compact control. */
+function iconButton(icon, title, handler) {
+  const b = el("button", "ghost mini");
+  b.title = title;
+  b.setAttribute("aria-label", title);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "ic");
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", icon);
+  svg.append(use);
+  b.append(svg);
+  b.addEventListener("click", (e) => { e.stopPropagation(); handler(); });
+  return b;
+}
+
+async function renderStorage() {
+  const box = $("#storage-box");
+  const st = await api("/api/storage");
+  box.textContent = "";
+  const d = st.data || {};
+  const dl = el("dl", "kv");
+  const put = (k, v) => { dl.append(el("dt", null, k)); dl.append(el("dd", null, v)); };
+  put("data indexed", sizeText(d.indexed_bytes) + "  ·  " + (d.indexed_artifacts || 0) + " file(s)");
+  if (d.uploaded_bytes) put("uploaded", sizeText(d.uploaded_bytes));
+  put("total data", sizeText(d.total_bytes));
+  const store = st.store || {};
+  put("studio folder", sizeText(store.data_dir_bytes));
+  box.append(dl);
+
+  const lanes = Object.keys(st.by_lane || {});
+  if (lanes.length) {
+    box.append(el("div", "section-label", "By lane"));
+    const table = el("table", "streams");
+    const head = el("tr");
+    ["lane", "files", "size"].forEach((h) => head.append(el("th", null, h)));
+    table.append(head);
+    lanes.forEach((lane) => {
+      const v = st.by_lane[lane];
+      const tr = el("tr");
+      tr.append(el("td", "name", lane));
+      tr.append(el("td", "num", String(v.artifacts)));
+      tr.append(el("td", "num", sizeText(v.bytes)));
+      table.append(tr);
+    });
+    box.append(table);
+  }
+
+  if ((st.models || []).length) {
+    box.append(el("div", "section-label", "Models"));
+    const table = el("table", "streams");
+    const head = el("tr");
+    ["model", "params", "4-bit", "adapter"].forEach((h) => head.append(el("th", null, h)));
+    table.append(head);
+    st.models.forEach((m) => {
+      const est = m.weights_estimate || {};
+      const tr = el("tr");
+      tr.append(el("td", "name", m.name));
+      tr.append(el("td", "num", m.params ? (m.params / 1e9).toFixed(2) + "B" : "-"));
+      tr.append(el("td", "num", m.params ? "~" + sizeText(est.int4) : "-"));
+      tr.append(el("td", "num", m.adapters_bytes ? sizeText(m.adapters_bytes) : "none yet"));
+      table.append(tr);
+    });
+    box.append(table);
+    box.append(el("p", "hint small",
+      "Model weights are estimated from the parameter count - the studio does not download them. " +
+      "Adapter sizes are measured from what runs actually wrote."));
+  } else {
+    box.append(el("p", "hint small", "No base models registered yet."));
+  }
+}
+
+/* --------------------------------------------------------------- folders */
+
+/* A folder of training data, and everything the last scan found in it. */
+function renderSources() {
+  const list = $("#source-list");
+  const rows = (STATE.sources || []).map((s) => {
+    const row = el("div", "row source " + s.state);
+    const col = el("div", "col");
+    col.append(el("div", "name", s.label));
+    col.append(el("div", "path", s.path));
+    const bits = [];
+    if (s.state === "scanning") bits.push("scanning…");
+    else bits.push(s.indexed + " file" + (s.indexed === 1 ? "" : "s"));
+    if (s.bytes) bits.push(sizeText(s.bytes));
+    if (s.skipped) bits.push(s.skipped + " skipped");
+    col.append(el("div", "meta", bits.join("  ·  ")));
+    row.append(col);
+    row.append(iconButton("#i-refresh", "Read this folder again", () => rescanSource(s.id)));
+    row.append(removeButton(s.label, "/api/sources/" + s.id));
+    return row;
+  });
+  section(list, rows, "No folders yet. Add one above to index a whole library at once.");
+  const n = (STATE.sources || []).length;
+  $("#source-count").textContent = n + " of 10 folders";
+}
+
+async function addSource() {
+  const input = $("#source-path");
+  const path = (input.value || "").trim();
+  if (!path) { input.focus(); return; }
+  const btn = $("#btn-source");
+  btn.disabled = true;
+  btn.textContent = "Adding…";
+  try {
+    await api("/api/sources", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    input.value = "";
+    await refresh();
+  } catch (err) {
+    alert(err.message || String(err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Add folder";
+  }
+}
+
+async function rescanSource(id) {
+  try {
+    await api("/api/sources/" + id + "/scan", { method: "POST" });
+  } catch (err) {
+    alert(err.message || String(err));
+  }
+  await refresh();
+}
+
+/* Folder and file progress: one event per file the studio reads, so a scan is
+   something to watch rather than something to wait for. */
+function connectWork() {
+  const es = new EventSource("/api/work/events");
+  es.addEventListener("work", (ev) => {
+    let w;
+    try { w = JSON.parse(ev.data); } catch (_) { return; }
+    w.at = Date.now();
+    WORK.unshift(w);
+    while (WORK.length > WORK_LIMIT) WORK.pop();
+    renderActivity();
+    // A folder scan finishes with 'done', and that is the moment what is on disk
+    // has changed - so re-read the state and re-measure rather than guess.
+    if (w.done) refresh().catch(() => {});
+  });
+}
+
 /* ----------------------------------------------------------------- filter */
 
 function wireFilters() {
@@ -1120,8 +1298,25 @@ function wire() {
   $("#btn-grid").addEventListener("click", () => { gridHelper.visible = !gridHelper.visible; });
   $("#btn-capture").addEventListener("click", () => captureViews("views"));
   $("#btn-drawing").addEventListener("click", () => captureViews("drawing"));
-  $("#btn-clear-activity").addEventListener("click", () => { UPLOADS.length = 0; renderActivity(); });
+  $("#btn-clear-activity").addEventListener("click", () => {
+    UPLOADS.length = 0;
+    WORK.length = 0;
+    renderActivity();
+  });
   $("#btn-refresh-system").addEventListener("click", renderSystem);
+
+  $("#btn-source").addEventListener("click", addSource);
+  $("#source-path").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); addSource(); }
+  });
+  $("#btn-storage").addEventListener("click", () => renderStorage().catch(() => {}));
+
+  // One file, and its lane read from the extension - the shortest path to
+  // watching a single part or drawing being read.
+  $("#btn-one-file").addEventListener("click", () => {
+    pickerLane = "";
+    $("#file-input").click();
+  });
 
   $("#btn-model").addEventListener("click", async () => {
     const name = prompt("Name the base model", "qwen-cad-base");
@@ -1183,6 +1378,7 @@ function wire() {
   wireFilters();
   setupVision();
   connectEvents();
+  connectWork();
   renderActivity();
   renderProps();
   setReadout("no part loaded");
