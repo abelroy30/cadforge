@@ -310,6 +310,39 @@ manifest.
 > being scored against itself. The number becomes informative when it is scoring
 > a *different* program, which is what training does.
 
+### 4.15 Run the loop, and watch it converge
+
+`Train` with `CADFORGE_TRAINER="python ml/train_grpo.py"` runs the reinforcement
+loop instead of the supervised fine-tune in 4.10. Its panel shows the reward
+curve as points arrive, and under it the trainer's own verdict in words -
+`converged: the reward settled at ...`, or the reason it stopped without doing so.
+The weights in that number come from the **Rewards** tab, and a weight changed
+there travels into the run's manifest, so the trainer is paid exactly what you
+set.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `CADFORGE_TRAINER` | command that runs a training job | unset (learning is idle) |
+| `CADFORGE_STUB` | `1` runs the loop with a stand-in policy and no model | `0` |
+| `CADFORGE_STUDIO` | base URL the trainer calls back to | the studio's own |
+| `CADFORGE_MAX_STEPS` | ceiling on optimiser steps | `400` |
+| `CADFORGE_MAX_EPOCHS` | ceiling on passes over the pairs | `40` |
+| `CADFORGE_PATIENCE` | steps the plateau test waits for an improvement | `8` |
+| `CADFORGE_EPSILON` | improvement the plateau test requires | `0.01` |
+
+To exercise the whole chain with no graphics card - it scores, climbs the
+curriculum, hides a dimension and converges, and trains nothing:
+
+```bat
+set CADFORGE_TRAINER=python ml/train_grpo.py
+set CADFORGE_STUB=1
+run.cmd
+```
+
+A run that reaches a ceiling without improving is recorded as **not converged**
+and says why. That distinction is the point: a finished run is not automatically
+an achievement.
+
 ## 5. Driving the API directly
 
 Every route is JSON. Uploads are the raw body with the name in the query string,
@@ -370,10 +403,12 @@ has the pixels; use the *Picture to steps* panel unless you are writing one.
 
 Errors are always `{"error": "..."}` with a real HTTP status.
 
----
+Folders, the work stream, storage and rewards:
 
+```sh
 # folders: add, re-scan, remove. Indexed in place - nothing is copied.
-curl -s -X POST localhost:8787/api/sources -H 'content-type: application/json'   -d '{"path":"/home/me/parts"}'
+curl -s -X POST localhost:8787/api/sources \
+  -H 'content-type: application/json' -d '{"path":"/home/me/parts"}'
 curl -s -X POST localhost:8787/api/sources/<source-id>/scan
 curl -s -X DELETE localhost:8787/api/sources/<source-id>
 
@@ -383,10 +418,23 @@ curl -N localhost:8787/api/work/events
 # what the data and the models weigh
 curl -s localhost:8787/api/storage
 
-# the reward a run is paid with, and what one part would score
-curl -s -X POST localhost:8787/api/rewards/preview -H 'content-type: application/json'   -d '{"asset_id":"<id>"}'
-curl -s -X PUT localhost:8787/api/rewards/<id> -H 'content-type: application/json'   -d '{"weight":2.5}'
-curl -s -X PUT localhost:8787/api/rewards/<id> -H 'content-type: application/json'   -d '{"enabled":false}'
+# the reward a run is paid with, and what one program would score. This is the
+# endpoint the trainer itself calls, so it is the honest way to check what a
+# reward pays before spending hours on it.
+curl -s -X POST localhost:8787/api/rewards/preview \
+  -H 'content-type: application/json' -d '{"asset_id":"<id>"}'
+curl -s -X POST localhost:8787/api/rewards/score \
+  -H 'content-type: application/json' \
+  -d '{"asset_id":"<id>","ops":[{"kind":"extrude","depth":100.0}]}'
+curl -s -X PUT localhost:8787/api/rewards/<id> \
+  -H 'content-type: application/json' -d '{"weight":2.5}'
+curl -s -X PUT localhost:8787/api/rewards/<id> \
+  -H 'content-type: application/json' -d '{"enabled":false}'
+```
+
+Scoring takes a program as well as an artifact, which is what makes it useful:
+score the studio's own reading and you are comparing it with itself; score a
+*different* program and the per-term numbers start to mean something.
 
 ## 6. Configuration
 
@@ -469,6 +517,10 @@ is all of it.
 | The page is blank or unstyled | `static/` is missing or wrong; the vendored `three.js` is part of it |
 | A SolidWorks upload says the feature tree is *listed but not decoded* | Correct and intentional. `ThirdPv`'s encoding is proprietary. Use the export macro for the real tree |
 | A `.features.json` yields nothing | The macro wrote an empty tree; the studio says *this export was empty* rather than pretending it is corrupt |
+| A run is refused with *"nothing in this dataset carries an operation program"* | The dataset holds no STEP part and no SolidWorks export, only pictures. A picture pairs with a part; on its own it has nothing to learn from |
+| A run is refused with *"all of them fell on the held-out side of the split"* | Too few parts for the split to leave anything to train on. Add parts, or lower `CADFORGE_VAL_PCT` |
+| A run finishes with *"not converged"* | It hit a ceiling - steps, epochs or time - without the reward settling. Usually the reward does not yet tell good programs from bad; check it on a real part in **Rewards** before spending another run |
+| The reward curve stops improving but does not converge | That is the honest outcome, not a fault. Edit a weight in **Rewards** so the terms disagree more usefully, then run again |
 | Pictures never pair with their part | The name rule. `plate-front.png` pairs with `plate.*`; `plate-isometric.png` does not |
 | *"no freecadcmd on PATH"* / the macro was generated but not run | FreeCAD is not installed. This is reported, never silently ignored; the native engine still rebuilds |
 | The training card says Python or torch is missing | Run `scripts\setup-ml.cmd` |
@@ -489,7 +541,7 @@ covered by a test that fails if a run stops dead rather than merely erroring.
 cargo test
 ```
 
-66 tests: the unit tests beside the code, plus `tests/ui_contract.rs`, which
+111 tests: the unit tests beside the code, plus `tests/ui_contract.rs`, which
 checks the interface contract without a browser — every element id the script
 reaches for exists, every URL it calls is a route the server serves, and the page
 is completely offline. If you change the UI or the API, that test is what tells

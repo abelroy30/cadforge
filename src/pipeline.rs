@@ -360,6 +360,66 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
     if let Some(out) = child.stdout.take() {
         let mut lines = BufReader::new(out).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(rest) = line.strip_prefix(STEP_PREFIX) {
+                match serde_json::from_str::<crate::model::CurvePoint>(rest) {
+                    Ok(point) => {
+                        {
+                            let mut db = app.db.lock().unwrap();
+                            if let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) {
+                                run.curve.push(point.clone());
+                            }
+                        }
+                        log(
+                            &app,
+                            &run_id,
+                            "info",
+                            format!(
+                                "step {} \u{b7} reward {:.3} \u{b7} mean {:.3} \u{b7} best {:.3} \u{b7} stage {}",
+                                point.step, point.reward, point.mean, point.best, point.stage
+                            ),
+                        );
+                    }
+                    Err(e) => log(
+                        &app,
+                        &run_id,
+                        "warn",
+                        format!("could not read a progress line: {e}"),
+                    ),
+                }
+                commit(&app, &run_id);
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix(DONE_PREFIX) {
+                let value: serde_json::Value =
+                    serde_json::from_str(rest).unwrap_or(serde_json::Value::Null);
+                let converged = value
+                    .get("converged")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let reason = value
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("no reason given");
+                let note = if converged {
+                    format!("converged: {reason}")
+                } else {
+                    format!("stopped without converging: {reason}")
+                };
+                {
+                    let mut db = app.db.lock().unwrap();
+                    if let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) {
+                        run.note = note.clone();
+                        run.stage = if converged {
+                            "Converged".into()
+                        } else {
+                            "Stopped - not converged".into()
+                        };
+                    }
+                }
+                log(&app, &run_id, if converged { "info" } else { "warn" }, note);
+                commit(&app, &run_id);
+                continue;
+            }
             log(&app, &run_id, "info", line);
             commit(&app, &run_id);
         }
@@ -417,6 +477,15 @@ async fn external_run(app: Arc<App>, run_id: String, cmd: String) {
     );
 }
 
+/// A trainer reports its progress by printing lines the studio understands.
+///
+/// This is the whole protocol, and it is deliberately tiny: one line per step,
+/// and one at the end to say whether training converged. A trainer in any
+/// language can speak it, and the studio needs to know nothing else about how
+/// the training works in order to draw the curve and record the verdict.
+const STEP_PREFIX: &str = "CADFORGE_STEP ";
+const DONE_PREFIX: &str = "CADFORGE_DONE ";
+
 /// Every file under a directory, as path relative to it -> size. Telling what a
 /// trainer produced means comparing this before and after it runs.
 fn tree(root: &std::path::Path) -> std::collections::BTreeMap<String, u64> {
@@ -454,10 +523,17 @@ fn finish(app: &App, run_id: &str, status: RunStatus) {
         if let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) {
             run.status = status.clone();
             run.progress = 1.0;
-            run.stage = if status == RunStatus::Succeeded {
-                "Done".into()
-            } else {
+            // A trainer that reported its own verdict keeps that stage. A run
+            // that stopped at its ceiling without converging must not end up
+            // labelled the same way as one that got there.
+            let verdict = run.stage.clone();
+            let reported = !run.note.is_empty();
+            run.stage = if status == RunStatus::Failed {
                 "Failed".into()
+            } else if reported {
+                verdict
+            } else {
+                "Done".into()
             };
             run.finished_at = Some(now());
         }
@@ -547,6 +623,8 @@ mod tests {
             created_at: crate::model::now(),
             finished_at: None,
             outputs: Vec::new(),
+            curve: Vec::new(),
+            note: String::new(),
         });
     }
 
@@ -584,6 +662,74 @@ mod tests {
             run.outputs.iter().any(|o| o.ends_with("report.json")),
             "a file the trainer wrote must be reported as an output, got {:?} (log: {messages:?})",
             run.outputs
+        );
+        drop(db);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A trainer's progress is a line it prints. The curve has to survive into
+    /// the run, and the trainer's own verdict has to outlive the generic "Done" -
+    /// otherwise a run that never converged is reported as if it had.
+    #[tokio::test]
+    async fn a_trainers_progress_and_verdict_are_recorded_on_the_run() {
+        let dir = std::env::temp_dir().join(format!("cadforge-curve-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = app(&dir);
+        seed(&app);
+
+        let s1 = "CADFORGE_STEP {\"step\": 1, \"reward\": 0.4, \"mean\": 0.4, \"best\": 0.4, \"stage\": 0}";
+        let s2 = "CADFORGE_STEP {\"step\": 2, \"reward\": 0.9, \"mean\": 0.65, \"best\": 0.9, \"stage\": 1}";
+        let done_ok = "CADFORGE_DONE {\"converged\": true, \"reason\": \"reward plateaued\"}";
+        let done_no = "CADFORGE_DONE {\"converged\": false, \"reason\": \"hit the ceiling\"}";
+        let converged = cfg!(windows);
+        let done = if converged { done_ok } else { done_no };
+        // The lines go through a file rather than an `echo`: a shell eats the
+        // double quotes a JSON object needs, and cmd and sh disagree about
+        // quoting, so a file is both portable and honest about what is being
+        // tested - the studio reading a trainer's progress, not shell quoting.
+        let script = dir.join("progress.txt");
+        std::fs::write(&script, format!("{s1}\n{s2}\n{done}\n")).unwrap();
+        let cmd = if cfg!(windows) {
+            format!("type \"{}\"", script.display())
+        } else {
+            format!("cat \"{}\"", script.display())
+        };
+
+        let finished = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            external_run(app.clone(), "r1".into(), cmd),
+        )
+        .await;
+        assert!(finished.is_ok(), "the external run never finished");
+
+        let db = app.db.lock().unwrap();
+        let run = db.runs.iter().find(|r| r.id == "r1").unwrap();
+        let messages: Vec<&str> = run.log.iter().map(|l| l.message.as_str()).collect();
+        assert_eq!(
+            run.curve.len(),
+            2,
+            "the curve was not recorded: {messages:?}"
+        );
+        assert_eq!(run.curve[1].step, 2);
+        assert!((run.curve[1].reward - 0.9).abs() < 1e-9);
+        assert!(
+            run.note.contains(if converged {
+                "converged"
+            } else {
+                "without converging"
+            }),
+            "the verdict was not recorded: {:?}",
+            run.note
+        );
+        assert_eq!(
+            run.stage,
+            if converged {
+                "Converged"
+            } else {
+                "Stopped - not converged"
+            },
+            "a run that did not converge must not be labelled Done"
         );
         drop(db);
 

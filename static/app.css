@@ -357,3 +357,12 @@ table.streams td.num{text-align:right;white-space:nowrap;}
 .verdict .total{font:600 14px var(--mono);color:var(--ok);}
 .verdict.bad .total{color:var(--err);}
 .verdict .gate{font-size:11px;color:var(--muted);}
+
+/* ------------------------------------------------------- training curve */
+
+.spark{width:100%;height:70px;display:block;margin-top:6px;}
+.spark polyline{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round;}
+.curve-meta{font:10.5px var(--mono);color:var(--muted);margin-top:2px;}
+.verdict-line{font-size:11px;color:var(--muted);margin:4px 0 0;}
+.verdict-line.ok{color:var(--ok);}
+.verdict-line.warn{color:var(--warn);}

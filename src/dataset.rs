@@ -77,8 +77,13 @@ fn split_of(id: &str, val_pct: u32) -> &'static str {
 /// One training example: a picture, and what to build to make what it shows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pair {
-    /// Path to the picture, relative to the studio's data directory.
+    /// The studio's own layout for the picture. Only meaningful for a picture
+    /// the studio copied in itself.
     pub image: String,
+    /// Where the picture actually is, absolute. This is the one to open: a
+    /// picture indexed from a folder lives in the user's folder, not in the
+    /// studio's store, and `image` above would point at nothing.
+    pub image_path: String,
     pub image_name: String,
     pub image_id: String,
     /// The document this picture belongs to, if one was found.
@@ -89,6 +94,9 @@ pub struct Pair {
     pub steps: Vec<StepLine>,
     /// The machine form, when the studio could derive one.
     pub program: Option<crate::ops::Program>,
+    /// The operations a curriculum climbs, in order, so a trainer does not have
+    /// to re-derive the sequence from the program.
+    pub reference_ops: Vec<String>,
     /// How the program was obtained, so a trainer can filter by trustworthiness.
     pub target: String,
     /// `train` or `val`. Fixed by the picture's id, so a re-export keeps a part
@@ -150,14 +158,24 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
             None => (Vec::new(), None, "unpaired".to_string(), None, None),
         };
 
+        let image = format!("assets/{}.{}", picture.id, picture.ext);
+        let image_path = picture.bytes_path(dir).to_string_lossy().to_string();
+        let reference_ops: Vec<String> = match &program {
+            Some(p) => p.op_names().iter().map(|s| s.to_string()).collect(),
+            // A recorded export leads with its heading, which is no operation.
+            None => steps.iter().skip(1).map(|l| l.op.clone()).collect(),
+        };
+
         pairs.push(Pair {
-            image: format!("assets/{}.{}", picture.id, picture.ext),
+            image,
+            image_path,
             image_name: picture.name.clone(),
             image_id: picture.id.clone(),
             source: source_name,
             source_id,
             steps,
             program,
+            reference_ops,
             target,
             split: split_of(&picture.id, val_pct).to_string(),
         });
@@ -209,8 +227,23 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
             "`split` is `train` or `val`, decided by a hash of the picture's id: the same \
              picture always lands on the same side, so re-exporting cannot leak a part \
              from train into eval.",
+            "`image_path` is the path to open; it is absolute and always correct. `image` \
+             is the studio's own layout and means nothing for a picture it did not copy in.",
         ],
     }))
+}
+
+/// Can this dataset train anything?
+///
+/// A dataset whose only pairs are held out is a run that cannot start, and the
+/// moment to say so is before it starts rather than in a trainer's dying words.
+/// Returns what the manifest counts: pairs that carry a program, and how many of
+/// those landed on the training side of the split.
+pub fn trainable(dir: &Path, db: &Db, dataset_id: &str) -> Result<(usize, usize), String> {
+    let m = manifest(dir, db, dataset_id)?;
+    let usable = m["counts"]["with_program"].as_u64().unwrap_or(0) as usize;
+    let train = m["counts"]["train"].as_u64().unwrap_or(0) as usize;
+    Ok((usable, train))
 }
 
 /// The training target for a document: a program if one can honestly be derived.
@@ -225,7 +258,11 @@ fn target_for(dir: &Path, doc: &Asset) -> (Option<crate::ops::Program>, String) 
             },
         );
     }
-    let path = dir.join("assets").join(format!("{}.{}", doc.id, doc.ext));
+    // Wherever this document's bytes actually are. An uploaded part lives in
+    // the studio's own store, but a part indexed from a folder lives in the
+    // user's - reading it from the studio's layout reported every indexed part
+    // as unreadable and quietly emptied the training set.
+    let path = doc.bytes_path(dir);
     let Ok(bytes) = std::fs::read(&path) else {
         return (None, "unreadable".to_string());
     };
@@ -309,6 +346,80 @@ mod tests {
         assert_eq!(first["target"], "parameters_only");
         assert!(first["program"].is_null());
         assert_eq!(first["source_id"], "d1");
+    }
+
+    /// A part the studio indexed in place lives in the user's folder, not in the
+    /// studio's store. Reading it from the studio's own layout made every indexed
+    /// part 'unreadable', which would have quietly emptied the very training set
+    /// the folder workflow exists to build.
+    #[test]
+    fn a_part_indexed_from_a_folder_still_yields_a_program() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/plate.step");
+        let mut db = Db::default();
+        let mut doc = asset("d1", "plate.step", AssetKind::Step, "step");
+        doc.source_path = Some(fixture.to_string());
+        doc.source_id = Some("s1".into());
+        db.assets.push(doc);
+        let mut pic = asset("p1", "plate-front.png", AssetKind::Image, "view");
+        pic.source_path = Some(fixture.to_string());
+        pic.source_id = Some("s1".into());
+        db.assets.push(pic);
+        db.datasets.push(Dataset {
+            id: "ds1".into(),
+            name: "indexed".into(),
+            asset_ids: vec!["d1".into(), "p1".into()],
+            created_at: String::new(),
+        });
+
+        let m = manifest(Path::new("/nonexistent"), &db, "ds1").unwrap();
+        assert_eq!(
+            m["counts"]["with_program"], 1,
+            "an indexed part must still yield a program: {m}"
+        );
+        let pair = &m["pairs"][0];
+        assert_eq!(pair["target"], "reconstructed_from_geometry");
+        assert!(!pair["reference_ops"].as_array().unwrap().is_empty());
+        assert_eq!(
+            pair["image_path"], fixture,
+            "the trainer must get the real path"
+        );
+    }
+
+    /// A dataset nothing can be learned from has to be visible before a run is
+    /// started. A part on its own has no program, and a part whose only pair
+    /// landed on the held-out side is a run that cannot work.
+    #[test]
+    fn trainability_is_known_before_a_run_starts() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/plate.step");
+        let mut db = Db::default();
+        db.assets
+            .push(asset("p9", "lonely.png", AssetKind::Image, "view"));
+        db.datasets.push(Dataset {
+            id: "ds1".into(),
+            name: "pictures only".into(),
+            asset_ids: vec!["p9".into()],
+            created_at: String::new(),
+        });
+        let (usable, train) = trainable(Path::new("/nonexistent"), &db, "ds1").unwrap();
+        assert_eq!((usable, train), (0, 0), "a picture alone teaches nothing");
+
+        let mut doc = asset("d9", "plate.step", AssetKind::Step, "step");
+        doc.source_path = Some(fixture.to_string());
+        db.assets.push(doc);
+        let mut pic = asset("p1", "plate-front.png", AssetKind::Image, "view");
+        pic.source_path = Some(fixture.to_string());
+        db.assets.push(pic);
+        db.datasets.push(Dataset {
+            id: "ds2".into(),
+            name: "one part".into(),
+            asset_ids: vec!["d9".into(), "p1".into()],
+            created_at: String::new(),
+        });
+        let (usable, train) = trainable(Path::new("/nonexistent"), &db, "ds2").unwrap();
+        assert_eq!(usable, 1);
+        // One part can legitimately land on the held-out side, and that is
+        // exactly the case the studio now refuses to start a run for.
+        assert_eq!(train, if split_of("p1", 10) == "train" { 1 } else { 0 });
     }
 
     #[test]

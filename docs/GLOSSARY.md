@@ -354,6 +354,33 @@ layout does not adapt to narrow screens.
 
 ## 7. Training and inference scripts (`ml/`, optional)
 
+### `ml/train_grpo.py`
+
+The reinforcement-learning loop the studio runs as an external trainer. It samples
+a group of candidate programs for a part, asks the studio to score them
+(`POST /api/rewards/score`), and moves the policy towards the better members of
+that group; it climbs a curriculum counted against each part's own history, hides
+a dimension in the final stage, and stops on a plateau that has a floor beneath
+it.
+
+It speaks one protocol, on stdout:
+
+```text
+CADFORGE_STEP {"step": 3, "reward": 0.42, "mean": 0.44, "best": 0.68, "stage": 1}
+CADFORGE_DONE {"converged": true, "reason": "the reward settled at 0.46"}
+```
+
+The second line is the trainer's verdict, and the studio believes it: a run that
+stopped without converging is recorded as such rather than stamped `Done`.
+
+With the stand-in policy (`CADFORGE_STUB=1`) the loop runs on a machine with no
+graphics card and trains nothing - it exists to exercise the plumbing.
+
+Full GRPO's PPO ratio and KL term are not implemented; the section on the
+training loop in `CONCEPTS.md` says exactly what is.
+
+
+
 ### `ml/train_vision.py`
 QLoRA fine-tune of a vision-language model. Default base model
 `Qwen/Qwen2-VL-2B-Instruct`. 4-bit NF4 quantisation with double quant, LoRA

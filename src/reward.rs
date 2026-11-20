@@ -12,12 +12,18 @@
 //! shape is a term it will trade against shape.
 
 use crate::model::Reward;
-use crate::ops::Program;
+use crate::ops::{Op, Program};
 use serde::{Deserialize, Serialize};
 
 /// The reward kinds this build understands. A reward whose kind is not here is
 /// reported as unknown rather than silently scored as zero.
-pub const KINDS: [&str; 4] = ["geometry", "recorded_history", "simplicity", "scale"];
+pub const KINDS: [&str; 5] = [
+    "geometry",
+    "recorded_history",
+    "simplicity",
+    "scale",
+    "dimension_recovery",
+];
 
 /// What a program is being scored against: as much of the truth as is known.
 ///
@@ -29,6 +35,22 @@ pub struct Target {
     pub triangles: Vec<f32>,
     /// The operations the part was really built with, when that is known.
     pub reference_ops: Vec<String>,
+    /// A dimension the trainer hid from the model, when this program was asked
+    /// for with a value removed. The trainer decides what to hide and reports
+    /// the true value, so the check is against the truth rather than against
+    /// whatever the model happened to produce.
+    pub masked: Option<Masked>,
+}
+
+/// A dimension that was hidden from the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Masked {
+    /// Which operation the hidden dimension belongs to, counting from zero.
+    pub op: usize,
+    /// The value that was removed. The dimension checked is the primary one for
+    /// that operation: an extrude's distance, a hole's diameter, a fillet's
+    /// radius.
+    pub value: f64,
 }
 
 /// What one reward had to say about one program.
@@ -97,6 +119,12 @@ pub fn defaults() -> Vec<Reward> {
             "scale",
             0.4,
             serde_json::json!({ "tolerance": 0.05 }),
+        ),
+        build(
+            "guesses the hidden size",
+            "dimension_recovery",
+            0.5,
+            serde_json::json!({ "tolerance_mm": 0.5 }),
         ),
     ]
 }
@@ -289,6 +317,44 @@ pub fn evaluate(program: &Program, target: &Target, rewards: &[Reward]) -> Verdi
                     ),
                 )
             }
+            "dimension_recovery" => {
+                let m = match &target.masked {
+                    Some(m) => m,
+                    None => {
+                        skipped.push(format!(
+                            "{}\u{2009}- no dimension was hidden for this one",
+                            r.name
+                        ));
+                        continue;
+                    }
+                };
+                let got = match program.ops.get(m.op) {
+                    Some(Op::Extrude { distance, .. }) => Some(*distance),
+                    Some(Op::Hole { diameter, .. }) | Some(Op::HolePattern { diameter, .. }) => {
+                        Some(*diameter)
+                    }
+                    Some(Op::Fillet { radius }) => Some(*radius),
+                    None => None,
+                };
+                let got = match got {
+                    Some(v) => v,
+                    None => {
+                        skipped.push(format!(
+                            "{}\u{2009}- the answer has no operation {}",
+                            r.name,
+                            m.op + 1
+                        ));
+                        continue;
+                    }
+                };
+                let tol = tolerance(&r.params, "tolerance_mm", 0.5);
+                let err = (got - m.value).abs();
+                (
+                    err,
+                    (1.0 - err / tol).clamp(0.0, 1.0),
+                    format!("guessed {got:.3} mm against {:.3} mm", m.value),
+                )
+            }
             other => {
                 skipped.push(format!("{}\u{2009}- unknown reward kind {other:?}", r.name));
                 continue;
@@ -386,6 +452,7 @@ mod tests {
         Target {
             triangles: built.solid.triangulate(),
             reference_ops: program.op_names().iter().map(|s| s.to_string()).collect(),
+            masked: None,
         }
     }
 
@@ -463,6 +530,7 @@ mod tests {
         let other = Target {
             triangles: t.triangles.clone(),
             reference_ops: vec!["extrude".into(), "hole".into()],
+            masked: None,
         };
         let reversed = evaluate(&backwards, &other, &only("recorded_history", 1.0)).total;
         assert_eq!(forwards, 1.0, "the same order must score a full mark");
@@ -501,8 +569,36 @@ mod tests {
         let v = evaluate(&plate(), &Target::default(), &defaults());
         assert!(v.valid);
         assert_eq!(v.components.len(), 0);
-        assert_eq!(v.skipped.len(), 4, "{:?}", v.skipped);
+        assert_eq!(v.skipped.len(), 5, "{:?}", v.skipped);
         assert_eq!(v.total, 0.0);
+    }
+
+    #[test]
+    fn a_hidden_dimension_is_scored_against_the_value_that_was_removed() {
+        let p = plate();
+        let mut t = target_of(&p);
+        // The extrude's distance was hidden, and the model got it right.
+        t.masked = Some(Masked { op: 0, value: 10.0 });
+        let right = evaluate(&p, &t, &only("dimension_recovery", 1.0));
+        assert_eq!(right.components.len(), 1, "{:?}", right.skipped);
+        assert!(right.total > 0.99, "the right value scored {}", right.total);
+
+        // Half a millimetre out, against a tolerance of half a millimetre.
+        let mut off = plate();
+        if let Op::Extrude { distance, .. } = &mut off.ops[0] {
+            *distance = 10.5;
+        }
+        let near = evaluate(&off, &t, &only("dimension_recovery", 1.0)).total;
+        assert!(near < 0.05, "half a millimetre out scored {near}");
+
+        // Nothing hidden means nothing to measure, and it says so.
+        let none = evaluate(&p, &target_of(&p), &only("dimension_recovery", 1.0));
+        assert_eq!(none.components.len(), 0);
+        assert!(
+            none.skipped[0].contains("no dimension was hidden"),
+            "{:?}",
+            none.skipped
+        );
     }
 
     #[test]
@@ -516,11 +612,11 @@ mod tests {
     fn the_defaults_are_seeded_once_and_left_alone_after() {
         let mut db = crate::model::Db::default();
         ensure_defaults(&mut db);
-        assert_eq!(db.rewards.len(), 4);
+        assert_eq!(db.rewards.len(), 5);
         let first = db.rewards[0].id.clone();
         db.rewards[0].weight = 9.0;
         ensure_defaults(&mut db);
-        assert_eq!(db.rewards.len(), 4, "seeding must not run twice");
+        assert_eq!(db.rewards.len(), 5, "seeding must not run twice");
         assert_eq!(db.rewards[0].id, first);
         assert_eq!(db.rewards[0].weight, 9.0, "a tuned weight must survive");
     }
@@ -532,7 +628,7 @@ mod tests {
         db.rewards[0].enabled = false;
         let spec = spec_for_manifest(&db);
         let list = spec.as_array().unwrap();
-        assert_eq!(list.len(), 3);
+        assert_eq!(list.len(), 4);
         assert!(list.iter().all(|r| r["kind"] != "geometry"));
     }
 }

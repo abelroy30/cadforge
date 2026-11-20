@@ -221,6 +221,33 @@ number becomes informative when it is scoring a different program, which is what
 training does - and until a real run has happened, no reward has been tested
 against a model.
 
+## The training loop
+
+`ml/train_grpo.py` is the loop, and the studio runs it as an external trainer.
+Verified end to end against a stand-in policy (`CADFORGE_STUB=1`), which exercises
+scoring over HTTP, the curriculum, the hidden dimension, the convergence test,
+the progress protocol and the curve in the interface - and trains nothing:
+
+```text
+status: succeeded | stage: Converged
+note: converged: the reward settled at 0.460 after 4 step(s)
+curve points: 4
+```
+
+The complementary case was seen as well: a run that reaches its ceiling without
+improving is not recorded as converged, and its note says why.
+
+**What is not verified, and cannot be from here:** no model has ever been
+trained. There is no GPU and no torch stack in this environment, so every part of
+the model path - loading a Qwen VL model, generating candidates, the update step -
+is untested against real weights. The loop's plumbing is tested; its learning is
+not.
+
+**Also not implemented:** full GRPO's PPO ratio and KL term. Group-relative
+advantages are real, so the verified reward does drive the update, but the update
+is advantage-weighted supervised training rather than ratio-based policy
+optimisation. The report a run writes states this.
+
 ## Where to go next
 
 In the order the project is blocked, not by attractiveness:

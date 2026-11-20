@@ -308,6 +308,47 @@ like it does:
 The set is seeded on first load and then belongs to the user: weights can be
 re-tuned and terms switched off without a rebuild.
 
+## The training loop, and what it is paid with
+
+The studio does not contain the loop; it starts one. `ml/train_grpo.py` runs as an
+external trainer, is handed a run directory and a manifest, and talks back over
+two small seams: it asks the studio to score a group of candidate programs
+(`POST /api/rewards/score`) and it reports its own progress on stdout.
+
+Three choices in it are deliberate.
+
+* **The reward is fetched, never reimplemented.** The number being optimised is
+the number the Rewards panel shows, computed by the same Rust. A reward written
+twice is a reward that will disagree with itself, and the disagreement surfaces
+after a long training run rather than during it.
+* **The curriculum is counted against each part's own history.** Ask for the first
+two operations, then the first five, then all of them - so a part with three
+operations climbs the whole ladder rather than stalling on an absolute count.
+Climbing the ladder does not end anything; the ceiling does.
+* **The last stage hides a dimension.** The studio scores how well the missing
+size was recovered, so guessing a size a drawing does not state is trained and
+checked rather than hoped for.
+
+### Converging, and saying when it did not
+
+Training stops when the moving average of the reward stops improving over a
+patience window, and that plateau test has a **floor** beneath it: a curve that
+has flattened at zero has not converged, it has failed, and a run that reports
+otherwise is the most expensive kind of wrong answer. A ceiling on steps, epochs
+and wall-clock time is the backstop, and reaching it is recorded as *not
+converged*. The trainer's own verdict is stored with the run, so a run that
+stopped early cannot be displayed as `Done`.
+
+### What this is, and is not
+
+The group-relative advantage is real: candidates are sampled as a group, the
+group's mean is the baseline, and each candidate is weighted by how much better
+than its group it did. What is **not** implemented is full GRPO's PPO ratio and
+its KL term against a frozen reference model - so this is advantage-weighted
+fine-tuning against a verified reward, not ratio-based policy optimisation. The
+report a run writes says so in those words, because a training report that
+overstates what it did is worse than one that admits a gap.
+
 ## Local-only, and other standing rules
 
 The project has a few invariants that are worth knowing because they explain

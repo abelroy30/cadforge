@@ -217,6 +217,32 @@ pub struct Run {
     /// Checkpoints or reports the run produced.
     #[serde(default)]
     pub outputs: Vec<String>,
+    /// The reward curve the trainer reported, step by step, so the studio can
+    /// draw what training is doing while it is still doing it.
+    #[serde(default)]
+    pub curve: Vec<CurvePoint>,
+    /// What the trainer concluded. A run that hit its ceiling without
+    /// converging is not a converged run and must never be reported as one, so
+    /// the verdict is recorded rather than inferred from the status.
+    #[serde(default)]
+    pub note: String,
+}
+
+/// One point on a run's reward curve, as its trainer reports it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurvePoint {
+    pub step: u64,
+    /// The mean reward of the group sampled at this step.
+    pub reward: f64,
+    /// The moving average the convergence test actually watches.
+    #[serde(default)]
+    pub mean: f64,
+    /// Which curriculum stage this step belongs to.
+    #[serde(default)]
+    pub stage: u32,
+    /// The best single program score seen so far.
+    #[serde(default)]
+    pub best: f64,
 }
 
 /// One term in the reward a training run is paid with.

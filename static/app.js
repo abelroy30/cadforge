@@ -1164,6 +1164,7 @@ function showRun(run) {
   $("#run-pill").textContent = run.status;
   $("#run-stage").textContent = run.stage + "  \u00b7  " + Math.round(run.progress * 100) + "%";
   $("#run-bar").style.width = Math.round(run.progress * 100) + "%";
+  renderCurve(run);
   const log = $("#run-log");
   log.textContent = "";
   (run.log || []).forEach((line) => {
@@ -1171,8 +1172,53 @@ function showRun(run) {
   });
   log.scrollTop = log.scrollHeight;
   paintStages(run);
+  const note = $("#run-note");
+  note.textContent = run.note || "";
+  note.className = "verdict-line" + (run.note
+    ? (run.note.indexOf("converged:") === 0 ? " ok" : " warn")
+    : "");
   const cancel = $("#btn-cancel-run");
   if (cancel) cancel.disabled = !run || !activeRunId;
+}
+
+/* The reward curve, drawn as the points arrive.
+   A run that stopped at its ceiling without converging looks different from one
+   that got there - which is the whole reason the studio records the trainer's
+   own verdict instead of assuming every finished run succeeded. */
+function renderCurve(run) {
+  const box = $("#run-curve");
+  const points = (run && run.curve) || [];
+  box.textContent = "";
+  if (points.length < 2) {
+    box.append(el("p", "hint small",
+      points.length ? "one point so far" : "no curve reported yet"));
+    return;
+  }
+
+  const w = 300, h = 70, pad = 5;
+  const values = points.map((p) => (typeof p.mean === "number" ? p.mean : p.reward) || 0);
+  const high = Math.max.apply(null, values.concat([0.0001]));
+  const low = Math.min.apply(null, values.concat([0]));
+  const span = Math.max(high - low, 0.0001);
+  const x = (i) => pad + (i * (w - 2 * pad)) / (values.length - 1);
+  const y = (v) => h - pad - ((v - low) / span) * (h - 2 * pad);
+
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("aria-label", "reward curve");
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("points", values.map((v, i) => x(i).toFixed(1) + "," + y(v).toFixed(1)).join(" "));
+  svg.append(line);
+  box.append(svg);
+
+  const last = values[values.length - 1];
+  box.append(el("div", "curve-meta",
+    "step " + points[points.length - 1].step +
+    "  ·  mean " + last.toFixed(3) +
+    "  ·  best " + high.toFixed(3) +
+    "  ·  " + values.length + " point(s)"));
 }
 
 function paintStages(run) {

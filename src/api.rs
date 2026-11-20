@@ -557,6 +557,21 @@ async fn create_run(
         if ds.asset_ids.is_empty() {
             return Err(ApiError::bad_request("dataset has no artifacts in it"));
         }
+        // Before anything is spawned: is there anything to learn from? A dataset
+        // whose only pairs are held out is a run that cannot work, and saying so
+        // now beats a trainer dying with a message nobody reads.
+        let (usable, train) = crate::dataset::trainable(&app.root, &db, &body.dataset_id)
+            .map_err(ApiError::bad_request)?;
+        if usable == 0 {
+            return Err(ApiError::bad_request(
+                "nothing in this dataset carries an operation program. A program comes from a STEP part or a SolidWorks export; a picture on its own has nothing to learn from.",
+            ));
+        }
+        if train == 0 {
+            return Err(ApiError::bad_request(format!(
+                "{usable} pair(s) carry a program, but all of them fell on the held-out side of the split, so there is nothing to train on. Add more parts, or lower CADFORGE_VAL_PCT in the studio's own environment."
+            )));
+        }
         let run = Run {
             id: uuid::Uuid::new_v4().to_string(),
             name: if body.name.trim().is_empty() {
@@ -573,6 +588,8 @@ async fn create_run(
             created_at: now(),
             finished_at: None,
             outputs: Vec::new(),
+            curve: Vec::new(),
+            note: String::new(),
         };
         db.runs.push(run.clone());
         db.save(&app.root).map_err(ApiError::internal)?;
@@ -694,8 +711,7 @@ async fn predict(
                 return Ok(Json(serde_json::to_value(inference).unwrap_or_default()));
             }
             Err(e) => notes.push(format!(
-                "the configured vision model ({cmd}) did not answer, so the built-in 
-                 geometric baseline was used instead: {e}"
+                "the configured vision model ({cmd}) did not answer, so the built-in geometric baseline was used instead: {e}"
             )),
         }
     }
@@ -1111,6 +1127,7 @@ fn target_and_program(
                 // A STEP part records no history, so the operations reconstructed
                 // from its geometry stand in as the reference for this part.
                 reference_ops: program.op_names().iter().map(|s| s.to_string()).collect(),
+                masked: None,
             };
             Ok((target, Some(program)))
         }
@@ -1126,14 +1143,76 @@ fn target_and_program(
                 crate::reward::Target {
                     triangles: Vec::new(),
                     reference_ops: ops,
+                    masked: None,
                 },
                 None,
             ))
         }
         _ => Err(ApiError::bad_request(
-            "only a STEP part or a feature-tree export can be scored: they are the ones              that carry a build history",
+            "only a STEP part or a feature-tree export can be scored: they are the ones that carry a build history",
         )),
     }
+}
+
+#[derive(Deserialize)]
+struct ScoreItem {
+    asset_id: String,
+    program: crate::ops::Program,
+    #[serde(default)]
+    masked: Option<crate::reward::Masked>,
+}
+
+#[derive(Deserialize)]
+struct ScoreRequest {
+    items: Vec<ScoreItem>,
+}
+
+/// Score a batch of programs against the parts they were asked for.
+///
+/// A trainer runs its loop in Python and asks for every verdict here, so there is
+/// exactly one implementation of a reward instead of a copy inside the trainer
+/// that drifts away from what the interface promised. The targets are read once
+/// per part rather than once per program: sampling thirty candidates for one part
+/// should not re-parse the same file thirty times.
+async fn score_rewards(
+    State(app): State<Arc<App>>,
+    Json(body): Json<ScoreRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if body.items.is_empty() {
+        return Err(ApiError::bad_request("no programs to score"));
+    }
+    if body.items.len() > 512 {
+        return Err(ApiError::bad_request("at most 512 programs at a time"));
+    }
+
+    let mut cache: std::collections::HashMap<String, crate::reward::Target> =
+        std::collections::HashMap::new();
+    let mut verdicts = Vec::with_capacity(body.items.len());
+
+    for item in &body.items {
+        let base = match cache.get(&item.asset_id) {
+            Some(t) => t.clone(),
+            None => {
+                let (t, _) = target_and_program(&app, &item.asset_id)?;
+                cache.insert(item.asset_id.clone(), t.clone());
+                t
+            }
+        };
+        let target = crate::reward::Target {
+            masked: item.masked.clone(),
+            ..base
+        };
+        let verdict = {
+            let db = app.db.lock().unwrap();
+            crate::reward::evaluate(&item.program, &target, &db.rewards)
+        };
+        verdicts.push(serde_json::json!({
+            "asset_id": item.asset_id,
+            "verdict": verdict,
+        }));
+    }
+
+    Ok(Json(serde_json::json!({ "verdicts": verdicts })))
 }
 
 pub fn router(app: Arc<App>) -> axum::Router {
@@ -1169,6 +1248,7 @@ pub fn router(app: Arc<App>) -> axum::Router {
             put(update_reward).delete(delete_reward),
         )
         .route("/api/rewards/preview", post(preview_reward))
+        .route("/api/rewards/score", post(score_rewards))
         .route("/api/sources", post(create_source))
         .route("/api/sources/{id}", delete(delete_source))
         .route("/api/sources/{id}/scan", post(scan_source))
