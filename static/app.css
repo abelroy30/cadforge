@@ -366,3 +366,34 @@ table.streams td.num{text-align:right;white-space:nowrap;}
 .verdict-line{font-size:11px;color:var(--muted);margin:4px 0 0;}
 .verdict-line.ok{color:var(--ok);}
 .verdict-line.warn{color:var(--warn);}
+
+/* -------------------------------------------------------------------- tabs */
+/* The panels were six stacked cards each. They are now three tabs each, so the
+   page shows one job at a time instead of everything at once. */
+.tabs{
+  position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;gap:4px;
+  padding:2px 0 8px;background:var(--panel);
+}
+.tab{
+  font:11px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  letter-spacing:.4px;text-transform:uppercase;color:var(--muted);
+  background:transparent;border:1px solid transparent;border-radius:999px;
+  padding:6px 12px;cursor:pointer;
+}
+.tab:hover{color:var(--ink);border-color:var(--line-2);}
+.tab.on{color:var(--ink);background:var(--panel-2);border-color:var(--line-2);}
+
+/* A card can override its display (`.card.grow` is flex), so hiding by tab has
+   to win outright. */
+[hidden]{display:none !important;}
+
+/* Hover help is a `title` on the element itself, so the only thing to style is
+   saying there is something to read. */
+.hint[title],.pill[title],.stage[title],#deploy-state[title]{cursor:help;}
+
+/* -------------------------------------------------------------- deployment */
+.deploy{margin-top:10px;padding-top:9px;border-top:1px solid var(--line);}
+.deploy-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+#deploy-state{color:var(--muted);}
+#btn-undeploy:disabled{opacity:.45;cursor:default;}
+#deploy-state[data-state="on"]{color:var(--ok);}

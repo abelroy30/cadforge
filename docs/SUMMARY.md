@@ -94,7 +94,7 @@ said a correct rebuild was wrong.
 
 ## How it is verified
 
-**91 automated tests** (`cargo test`): 82 unit tests beside the code, and 9
+**112 automated tests** (`cargo test`): 100 unit tests beside the code, and 12
 interface-contract tests in `tests/ui_contract.rs`. `cargo fmt --check` is clean
 and the Python scripts compile.
 
@@ -210,10 +210,9 @@ Added after the sections above were written, and verified live over HTTP:
   to compare against abstains and says so; and the set travels with the
   manifest, so a finished run can be explained after the rewards are edited.
 
-Still to come, in order: the GRPO loop with the staged curriculum and a
-convergence test (a plateau with a hard ceiling), Deploy (a local inference
-endpoint plus the adapter to download), and the interface tidy-up that groups
-the panels.
+All three of those are now built: the loop and its convergence test are in
+*The training loop* below, and Deploy and the tabbed panels are in *Deploy, and
+the panels*.
 
 One caveat worth stating plainly: the reward preview scores the studio's own
 reading of a part against itself, so a perfect score there is expected. The
@@ -247,6 +246,29 @@ not.
 advantages are real, so the verified reward does drive the update, but the update
 is advantage-weighted supervised training rather than ratio-based policy
 optimisation. The report a run writes states this.
+
+## Deploy, and the panels
+
+**Deploy** makes a finished run the thing that answers *Picture to steps*. A run
+row grows a **Deploy** button only when the run wrote something named like an
+adapter, and the Training card shows what is being served, with **Undeploy**
+beside it. Verified live in both directions:
+
+```text
+run that wrote adapter/weights.bin:  deploy 200, GET {"deployed":true, ...}
+                                     undeploy 204, then 400 "nothing is deployed"
+run that wrote only report.json:     400 "this run produced no adapter to deploy -
+                                     it wrote report.json. Nothing was trained to serve."
+```
+
+**The panels are tabbed.** Six cards down each side became *Files / Activity /
+Runs* and *Inspect / Rewards / Train*, so one job is on screen at a time. A card
+belongs to a tab by an attribute, so the tabbing is one function rather than
+per-card wiring, and the contract test checks that every tab reaches a card and
+that every button explains itself on hover.
+
+Still not verified: no adapter has ever answered a picture, because none has
+been trained here.
 
 ## Where to go next
 

@@ -349,6 +349,25 @@ fine-tuning against a verified reward, not ratio-based policy optimisation. The
 report a run writes says so in those words, because a training report that
 overstates what it did is worse than one that admits a gap.
 
+## Deploy - one answer at a time
+
+Training produces an adapter; deploying is what makes the studio *use* it. Until
+something is deployed, **Picture to steps** answers with the built-in geometric
+baseline, so a finished run changes nothing a person can see.
+
+Deployment is one record on the studio rather than a flag on each run. "Which run
+is live" has exactly one answer, and a per-run flag would let two runs claim it
+with nothing to say which one would actually be used.
+
+Deploying needs a run to have finished *and* to have written something named like
+an adapter. A trainer may call its output whatever it likes, so the check is on
+the name - and a run that trained nothing is refused with the list of what it did
+write. That refusal is the point: a *Deployed* badge over an empty folder would
+be worse than no feature at all.
+
+A named `CADFORGE_ADAPTER` still wins over the deployed one, so one experiment
+does not disturb what is being served.
+
 ## Local-only, and other standing rules
 
 The project has a few invariants that are worth knowing because they explain

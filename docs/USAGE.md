@@ -71,7 +71,10 @@ backend. It is useful for showing someone what it looks like.
 ## 3. The interface
 
 Three columns: what you uploaded on the left, the 3D viewport in the middle, the
-inspector and the training console on the right.
+inspector and the training console on the right. Each side column is split into
+tabs, so one job is on screen at a time - **Files / Activity / Runs** on the
+left, **Inspect / Rewards / Train** on the right - and every control says what it
+does on hover.
 
 **Left — Files & artifacts.**
 
@@ -93,7 +96,8 @@ inspector and the training console on the right.
 * Drop files anywhere here and each one's lane is read from its extension —
   this is the way to add a mixed batch in one go.
 
-**Right — inspector and training.**
+**Right — inspector and training** — *Inspect* (the inspector and Picture to
+steps), *Rewards*, and *Train* (the models, the run, and Deploy).
 
 * The inspector shows *How this was processed* for whatever artifact you clicked:
   every stage from upload to what was read out of the file, the reconstructed
@@ -343,6 +347,23 @@ A run that reaches a ceiling without improving is recorded as **not converged**
 and says why. That distinction is the point: a finished run is not automatically
 an achievement.
 
+### 4.16 Deploy a finished run
+
+Deploying makes a finished run's adapter the thing that answers **Picture to
+steps**. Without it a trained model sits in a folder while the panel keeps using
+the geometric baseline, which is a quiet way of training something nobody uses.
+
+1. Finish a run that wrote an adapter. Its row in **Runs** grows a **Deploy**
+   button - the studio offers the button only when there is something to serve.
+2. Press it. The Training card then reads `serving <run> · <base model>`.
+3. **Undeploy** stops serving it and the studio goes back to its own reading.
+
+The studio refuses to deploy a run that has not finished, and one that trained
+nothing - naming what the run actually wrote, so `report.json` reads as *a report
+and no weights* rather than as a mysterious failure. `scripts/train-local.cmd`
+writes `adapter/`; `ml/train_grpo.py` with `CADFORGE_STUB=1` writes none, which is
+why a stub run cannot be deployed.
+
 ## 5. Driving the API directly
 
 Every route is JSON. Uploads are the raw body with the name in the query string,
@@ -430,6 +451,11 @@ curl -s -X PUT localhost:8787/api/rewards/<id> \
   -H 'content-type: application/json' -d '{"weight":2.5}'
 curl -s -X PUT localhost:8787/api/rewards/<id> \
   -H 'content-type: application/json' -d '{"enabled":false}'
+
+# serving: deploy a finished run, ask what is serving, stop serving
+curl -s -X POST localhost:8787/api/runs/<id>/deploy
+curl -s localhost:8787/api/deployment
+curl -s -X DELETE localhost:8787/api/deployment
 ```
 
 Scoring takes a program as well as an artifact, which is what makes it useful:
@@ -526,6 +552,8 @@ is all of it.
 | The training card says Python or torch is missing | Run `scripts\setup-ml.cmd` |
 | *"no held-out pairs, so this run has no honest score"* | Your dataset is small enough that the 10% split held nothing back. Add parts, or lower `CADFORGE_VAL_PCT` |
 | *"warning: under 8 GB of VRAM…"* | Lower `CADFORGE_MAXLEN` (768 or less) and keep `CADFORGE_BATCH=1`; see `TRAINING.md` |
+| *"only a run that finished successfully can be deployed"* | The run is still going, or it failed. Wait, or cancel it |
+| *"this run produced no adapter to deploy - it wrote report.json"* | The run trained nothing to serve. That is the honest answer rather than a fault: a stub loop and a real run that failed late both end here |
 | A run finishes with no outputs | The trainer wrote nothing into `CADFORGE_OUT`; the studio warns about this rather than passing it as success |
 | *"…is still running against that model - cancel it first"* | A live run is using it. `Cancel` the run, then delete |
 | A run finishes, then its model or dataset vanishes from the pickers | It was deleted after the run; the run's own record is kept, but nothing can be started against it again |
@@ -541,10 +569,11 @@ covered by a test that fails if a run stops dead rather than merely erroring.
 cargo test
 ```
 
-111 tests: the unit tests beside the code, plus `tests/ui_contract.rs`, which
+112 tests: the unit tests beside the code, plus `tests/ui_contract.rs`, which
 checks the interface contract without a browser — every element id the script
 reaches for exists, every URL it calls is a route the server serves, and the page
-is completely offline. If you change the UI or the API, that test is what tells
+is completely offline. It also checks that every tab on the page reaches a card
+and every button explains itself on hover. If you change the UI or the API, that test is what tells
 you what you broke.
 
 `cargo fmt --check` should be clean.

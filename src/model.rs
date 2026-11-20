@@ -273,6 +273,22 @@ fn enabled_default() -> bool {
     true
 }
 
+/// What is serving answers right now.
+///
+/// Deliberately a single record rather than a flag on every run. "Which run is
+/// live" has exactly one answer, and a flag would let two runs claim it at once
+/// with nothing to say which one the studio would actually use.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Deployment {
+    pub run_id: String,
+    /// Absolute path to the adapter the run produced.
+    pub adapter: String,
+    /// The base model it was adapted from, by name, so the record reads on its
+    /// own after the model row itself is gone.
+    pub base_model: String,
+    pub deployed_at: String,
+}
+
 /// Everything the studio knows, persisted as one JSON document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
@@ -290,6 +306,9 @@ pub struct Db {
     pub datasets: Vec<Dataset>,
     #[serde(default)]
     pub runs: Vec<Run>,
+    /// The run whose adapter is answering. One at a time, by construction.
+    #[serde(default)]
+    pub deployment: Option<Deployment>,
 }
 
 impl Db {

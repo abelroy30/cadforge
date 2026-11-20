@@ -162,6 +162,7 @@ async function refresh() {
   renderRewards();
   renderRewardPicker();
   try { await renderStorage(); } catch (_) { /* the panel says so itself */ }
+  await renderDeployment();
 }
 
 /* ------------------------------------------------------------------- lists */
@@ -269,6 +270,17 @@ function renderRuns() {
     const row = el("div", "row" + (r.id === activeRunId ? " active" : ""));
     row.append(el("span", "name", r.name));
     row.append(el("span", "chip-kind", r.status));
+    // A run is only worth deploying if it wrote an adapter. A run that converged
+    // on paper but trained nothing has nothing to serve, so no button is offered
+    // rather than a button that fails.
+    const adapter = (r.outputs || []).find((o) => o.split("/")[0].toLowerCase().includes("adapter"));
+    if (adapter) {
+      const dep = el("button", "ghost mini", "Deploy");
+      dep.type = "button";
+      dep.title = "Serve the adapter this run produced from the picture-to-steps endpoint";
+      dep.addEventListener("click", (e) => { e.stopPropagation(); deployRun(r.id); });
+      row.append(dep);
+    }
     row.addEventListener("click", () => { activeRunId = r.id; renderRuns(); showRun(r); });
     return row;
   });
@@ -978,6 +990,11 @@ function renderVision(out) {
    a loop worth closing quickly: change a number, score a part, look. */
 function renderRewards() {
   const list = $("#reward-list");
+  // Redrawing while a weight is being edited would throw the edit away, and the
+  // page redraws whenever the studio's state changes - which is often during a
+  // run. Leave the list alone until the field is released.
+  const focused = document.activeElement;
+  if (focused && focused.tagName === "INPUT" && list.contains(focused)) return;
   const rewards = STATE.rewards || [];
   const rows = rewards.map((r) => {
     const row = el("div", "row reward" + (r.enabled ? "" : " off"));
@@ -1452,9 +1469,82 @@ function wireFilters() {
   });
 }
 
+/* ------------------------------------------------------------- deployment */
+
+// What is serving answers right now, read from the server rather than kept in
+// the page: "which run is live" has exactly one answer and the page is not it.
+async function renderDeployment() {
+  const box = $("#deploy-state");
+  if (!box) return;
+  try {
+    const d = await api("/api/deployment");
+    box.dataset.state = d.deployed ? "on" : "off";
+    if (d.deployed) {
+      const run = STATE.runs.find((r) => r.id === d.run_id);
+      box.textContent = "serving " + (run ? run.name : d.run_id.slice(0, 8)) + " · " + d.base_model;
+      box.title = "The adapter at " + d.adapter + ", deployed " + d.deployed_at;
+    } else {
+      box.textContent = "nothing deployed";
+      box.title = "The studio answers picture-to-steps with its own reconstruction.";
+    }
+    $("#btn-undeploy").disabled = !d.deployed;
+  } catch (err) {
+    box.textContent = "deployment state unavailable";
+  }
+}
+
+async function deployRun(runId) {
+  try {
+    const d = await api("/api/runs/" + runId + "/deploy", { method: "POST" });
+    await renderDeployment();
+    setReadout("deployed " + d.base_model + " adapter");
+  } catch (err) {
+    alert("Could not deploy:
+
+" + err.message);
+  }
+}
+
+async function undeploy() {
+  try {
+    await api("/api/deployment", { method: "DELETE" });
+  } catch (err) {
+    // Nothing deployed is the state this call wanted anyway.
+  }
+  await renderDeployment();
+}
+
+/* --------------------------------------------------------------- panels */
+
+// Tabs are declarative: a button names a panel and a tab, and every card in that
+// panel tagged with the same tab shows. Putting a card on a tab is an attribute
+// on the card, so this is the only place that knows how tabs work.
+function wireTabs() {
+  document.querySelectorAll(".tabs .tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const panel = btn.dataset.panel;
+      const tab = btn.dataset.tab;
+      document.querySelectorAll('.tabs .tab[data-panel="' + panel + '"]').forEach((b) => b.classList.remove("on"));
+      btn.classList.add("on");
+      document.querySelectorAll(".panel." + panel + " > .card").forEach((card) => {
+        card.hidden = card.dataset.tab !== tab;
+      });
+    });
+  });
+  // Land on the first tab of each panel, so the page never opens with every
+  // card stacked down the side.
+  document.querySelectorAll(".tabs").forEach((nav) => {
+    const first = nav.querySelector(".tab.on") || nav.querySelector(".tab");
+    if (first) first.click();
+  });
+}
+
 /* -------------------------------------------------------------------- wire */
 
 function wire() {
+  wireTabs();
+  $("#btn-undeploy").addEventListener("click", undeploy);
+
   // Each lane tile opens the same hidden picker, but remembers which lane it was
   // so the files land in the right place even if their extension says otherwise.
   $("#file-input").addEventListener("change", (e) => {

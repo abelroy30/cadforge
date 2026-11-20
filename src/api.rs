@@ -504,6 +504,17 @@ async fn delete_model(
             run.name
         )));
     }
+    if let Some(d) = &db.deployment {
+        if db
+            .runs
+            .iter()
+            .any(|r| r.id == d.run_id && r.base_model_id == id)
+        {
+            return Err(ApiError::bad_request(
+                "that model is what the deployed run is serving - undeploy it first",
+            ));
+        }
+    }
     db.models.retain(|m| m.id != id);
     db.save(&app.root).map_err(ApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
@@ -685,6 +696,7 @@ struct PredictQuery {
 /// If `CADFORGE_VISION` names a command, that model is asked first; otherwise,
 /// or if it fails, the built-in geometric baseline answers, and says so.
 async fn predict(
+    State(app): State<Arc<App>>,
     Query(q): Query<PredictQuery>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -701,11 +713,21 @@ async fn predict(
 
     let mut notes: Vec<String> = Vec::new();
 
+    // A named adapter wins, then whatever has been deployed. Deployment has to
+    // change what answers, or it is only a note to self.
+    let adapter = {
+        let db = app.db.lock().unwrap();
+        std::env::var("CADFORGE_ADAPTER")
+            .ok()
+            .filter(|a| !a.trim().is_empty())
+            .or_else(|| db.deployment.as_ref().map(|d| d.adapter.clone()))
+    };
+
     if let Some(cmd) = std::env::var("CADFORGE_VISION")
         .ok()
         .filter(|c| !c.trim().is_empty())
     {
-        match vision_command(&cmd, &body, q.w, q.h).await {
+        match vision_command(&cmd, adapter.as_deref(), &body, q.w, q.h).await {
             Ok(mut inference) => {
                 inference.source = format!("model: {cmd}");
                 return Ok(Json(serde_json::to_value(inference).unwrap_or_default()));
@@ -734,6 +756,7 @@ async fn predict(
 /// a compiled binary all plug in the same way.
 async fn vision_command(
     cmd: &str,
+    adapter: Option<&str>,
     rgba: &[u8],
     w: usize,
     h: usize,
@@ -746,13 +769,16 @@ async fn vision_command(
     } else {
         ("sh", vec!["-c", cmd])
     };
-    let out = tokio::process::Command::new(program)
+    let mut command = tokio::process::Command::new(program);
+    command
         .args(args)
         .env("CADFORGE_IMAGE", &path)
         .env("CADFORGE_WIDTH", w.to_string())
-        .env("CADFORGE_HEIGHT", h.to_string())
-        .output()
-        .await;
+        .env("CADFORGE_HEIGHT", h.to_string());
+    if let Some(adapter) = adapter {
+        command.env("CADFORGE_ADAPTER", adapter);
+    }
+    let out = command.output().await;
     let _ = std::fs::remove_file(&path);
 
     let out = out.map_err(|e| format!("could not run it: {e}"))?;
@@ -1055,6 +1081,103 @@ async fn update_reward(
     Ok(Json(out))
 }
 
+/// Deploy a finished run: from now on its adapter is what answers.
+///
+async fn deploy_run(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::model::Deployment>, ApiError> {
+    let mut db = app.db.lock().unwrap();
+    let run = db
+        .runs
+        .iter()
+        .find(|r| r.id == id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("run"))?;
+    if run.status != RunStatus::Succeeded {
+        return Err(ApiError::bad_request(
+            "only a run that finished successfully can be deployed",
+        ));
+    }
+    let base_model = db
+        .models
+        .iter()
+        .find(|m| m.id == run.base_model_id)
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| "a model that is no longer registered".into());
+
+    // An adapter is whatever the trainer called it, so the output named like one
+    // is the one deployed. A run that trained nothing has nothing to serve, and
+    // saying that beats deploying a folder that is not there.
+    let adapter = run
+        .outputs
+        .iter()
+        .filter_map(|o| o.split('/').next())
+        .find(|seg| seg.to_lowercase().contains("adapter"));
+    let Some(adapter) = adapter else {
+        return Err(ApiError::bad_request(format!(
+            "this run produced no adapter to deploy - it wrote {}. Nothing was trained to serve.",
+            if run.outputs.is_empty() {
+                "nothing".to_string()
+            } else {
+                run.outputs.join(", ")
+            }
+        )));
+    };
+
+    let deployment = crate::model::Deployment {
+        run_id: run.id.clone(),
+        adapter: app
+            .root
+            .join("runs")
+            .join(&run.id)
+            .join(adapter)
+            .to_string_lossy()
+            .to_string(),
+        base_model,
+        deployed_at: now(),
+    };
+    db.deployment = Some(deployment.clone());
+    db.save(&app.root).map_err(ApiError::internal)?;
+    tracing::info!("run {} deployed: {}", run.id, deployment.adapter);
+    Ok(Json(deployment))
+}
+
+/// Stop serving: the studio goes back to whatever it answers with by default.
+async fn undeploy(State(app): State<Arc<App>>) -> Result<StatusCode, ApiError> {
+    let mut db = app.db.lock().unwrap();
+    if db.deployment.take().is_none() {
+        return Err(ApiError::bad_request("nothing is deployed"));
+    }
+    db.save(&app.root).map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// What is serving right now.
+async fn deployment(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    let db = app.db.lock().unwrap();
+    let value = match &db.deployment {
+        Some(d) => {
+            let name = db
+                .runs
+                .iter()
+                .find(|r| r.id == d.run_id)
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| "a run that is no longer listed".into());
+            serde_json::json!({
+                "deployed": true,
+                "run_id": d.run_id,
+                "run_name": name,
+                "adapter": d.adapter,
+                "base_model": d.base_model,
+                "deployed_at": d.deployed_at,
+            })
+        }
+        None => serde_json::json!({ "deployed": false }),
+    };
+    Json(value)
+}
+
 async fn delete_reward(
     State(app): State<Arc<App>>,
     Path(id): Path<String>,
@@ -1242,6 +1365,8 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/api/datasets/{id}/export", get(export_dataset))
         .route("/api/runs", post(create_run))
         .route("/api/runs/{id}/cancel", post(cancel_run))
+        .route("/api/runs/{id}/deploy", post(deploy_run))
+        .route("/api/deployment", get(deployment).delete(undeploy))
         .route("/api/rewards", post(create_reward))
         .route(
             "/api/rewards/{id}",

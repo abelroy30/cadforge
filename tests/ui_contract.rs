@@ -389,3 +389,29 @@ fn every_button_explains_itself_on_hover() {
         );
     }
 }
+
+/// Each tab name has to appear on a button and on the card or cards it
+/// reveals. A card tagged with a tab no button offers can never be shown:
+/// the tabs would leave it hidden and nothing on the page would say so.
+/// The reverse - a button revealing nothing - is the same bug inverted.
+#[test]
+fn every_tab_can_be_reached() {
+    let html = read("static/index.html");
+    let tabs = data_attrs(&html, "tab");
+    let panels = data_attrs(&html, "panel");
+    assert!(tabs.len() >= 12, "only {} tab tags", tabs.len());
+    assert!(panels.len() >= 6, "only {} tab panels", panels.len());
+    for panel in ["left", "right"] {
+        assert!(
+            panels.iter().any(|p| p == panel),
+            "no tabs on the {panel} panel"
+        );
+    }
+    for tab in ["files", "activity", "runs", "inspect", "rewards", "train"] {
+        let n = tabs.iter().filter(|t| *t == tab).count();
+        assert!(
+            n >= 2,
+            "the {tab:?} tab appears {n} time(s), so it is either on no button or on no card"
+        );
+    }
+}

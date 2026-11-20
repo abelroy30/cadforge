@@ -294,6 +294,10 @@ nothing to rebuild against. Each reward takes what it needs and abstains
 otherwise. The `Source` and `Reward` types themselves live in `src/model.rs`
 with the rest of the persisted state.
 
+**Deployment** - src/model.rs
+
+One record saying which run is answering, with the adapter path and the base model by name. One at a time by construction. Routes: POST /api/runs/{id}/deploy, GET and DELETE /api/deployment, which predict reads after CADFORGE_ADAPTER.
+
 ## 6. Web front end (`static/`)
 
 ### `static/index.html`

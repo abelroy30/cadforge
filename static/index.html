@@ -33,8 +33,13 @@
 
   <!-- LEFT: files, then everything the studio has read out of them. -->
   <aside class="panel left" aria-label="Files and artifacts">
+    <nav class="tabs" id="left-tabs" role="tablist" aria-label="Files, activity and runs">
+      <button type="button" class="tab on" data-panel="left" data-tab="files" title="Folders, files, artifacts and datasets">Files</button>
+      <button type="button" class="tab" data-panel="left" data-tab="activity" title="What the studio is doing right now, and how much is on disk">Activity</button>
+      <button type="button" class="tab" data-panel="left" data-tab="runs" title="Training runs and what came of them">Runs</button>
+    </nav>
 
-    <section class="card">
+    <section data-tab="files" class="card">
       <div class="card-head"><h2>Data folders</h2></div>
       <p class="hint">Point the studio at a folder of parts, drawings and pictures. Files are read
         where they are: nothing is copied, and your files are never touched.</p>
@@ -48,7 +53,7 @@
       <p class="hint small" id="source-count">no folders yet</p>
     </section>
 
-    <section class="card">
+    <section data-tab="files" class="card">
       <div class="card-head"><h2>Add files</h2></div>
       <p class="hint">For one or two files: click a lane to browse, or drop files on it. A whole library
         belongs in the folders above.</p>
@@ -75,19 +80,19 @@
       </div>
     </section>
 
-    <section class="card">
+    <section data-tab="activity" class="card">
       <div class="card-head"><h2>Activity</h2>
         <button type="button" class="ghost mini" id="btn-clear-activity" title="Clear this view. Nothing is deleted - it is only a window on what is happening.">Clear</button></div>
       <div class="list activity" id="activity-list"></div>
     </section>
 
-    <section class="card">
+    <section data-tab="activity" class="card">
       <div class="card-head"><h2>Storage</h2>
         <button type="button" class="ghost mini" id="btn-storage" title="Measure the data and the models again">Measure</button></div>
       <div id="storage-box"><p class="hint">measuring&hellip;</p></div>
     </section>
 
-    <section class="card">
+    <section data-tab="files" class="card">
       <div class="card-head"><h2>Artifacts</h2></div>
       <p class="hint">Tick artifacts to build a dataset. Click a row to inspect it.</p>
       <div class="chips" id="asset-filters">
@@ -105,12 +110,12 @@
       </div>
     </section>
 
-    <section class="card">
+    <section data-tab="files" class="card">
       <div class="card-head"><h2>Datasets</h2></div>
       <div class="list" id="dataset-list"></div>
     </section>
 
-    <section class="card grow">
+    <section data-tab="runs" class="card grow">
       <div class="card-head"><h2>Runs</h2></div>
       <div class="list" id="run-list"></div>
     </section>
@@ -143,13 +148,18 @@
 
   <!-- RIGHT: what the selection is, the vision test, and training. -->
   <aside class="panel right" aria-label="Inspector and training">
+    <nav class="tabs" id="right-tabs" role="tablist" aria-label="Inspect, rewards and training">
+      <button type="button" class="tab on" data-panel="right" data-tab="inspect" title="What the selected artifact is, and the picture-to-steps test">Inspect</button>
+      <button type="button" class="tab" data-panel="right" data-tab="rewards" title="What a training run is paid for, and why">Rewards</button>
+      <button type="button" class="tab" data-panel="right" data-tab="train" title="Models, the training run and deploying what came of it">Train</button>
+    </nav>
 
-    <section class="card">
+    <section data-tab="inspect" class="card">
       <div class="card-head"><h2 id="inspector-title">Inspector</h2></div>
       <div id="props"><p class="hint">Select an artifact to see what is inside it.</p></div>
     </section>
 
-    <section class="card">
+    <section data-tab="inspect" class="card">
       <div class="card-head"><h2>Picture to steps</h2></div>
       <p class="hint">Give the studio a picture and it will guess the build steps, then you can rebuild them as geometry.</p>
       <div class="vision-drop" id="vision-drop" role="button" tabindex="0"
@@ -164,14 +174,14 @@
       <div id="vision-result"></div>
     </section>
 
-    <section class="card">
+    <section data-tab="train" class="card">
       <div class="card-head"><h2>Base models</h2>
         <button type="button" class="ghost mini" id="btn-model" title="Describe a base model the studio can adapt or fine-tune">Register</button></div>
       <p class="hint">A model to adapt or fine-tune. Register one to make it available to a training run.</p>
       <div class="list" id="model-list"></div>
     </section>
 
-    <section class="card">
+    <section data-tab="rewards" class="card">
       <div class="card-head"><h2>Rewards</h2>
         <button type="button" class="ghost mini" id="btn-reward" title="Add another term to what a run is paid for">Add</button></div>
       <p class="hint">What a training run is paid for. A switched-off reward keeps its settings but
@@ -186,7 +196,7 @@
       <div id="reward-preview"></div>
     </section>
 
-    <section class="card grow">
+    <section data-tab="train" class="card grow">
       <div class="card-head"><h2>Training</h2>
         <span class="pill small" id="run-pill">idle</span></div>
       <div class="system" id="system-status"></div>
@@ -205,6 +215,14 @@
       <div class="curve" id="run-curve" title="The reward the run is being paid, step by step. The moving average is what the convergence test watches."></div>
       <p class="verdict-line" id="run-note" title="What the trainer concluded, in its own words."></p>
       <div class="run-actions"><button type="button" class="ghost mini" id="btn-cancel-run" title="Stop the run that is going">Cancel run</button></div>
+      <div class="deploy">
+        <div class="deploy-head">
+          <span class="hint small" id="deploy-state" title="Which run's adapter the studio is serving, if any">nothing deployed</span>
+          <button type="button" class="ghost mini" id="btn-undeploy" title="Stop serving the deployed run and fall back to the studio's own reconstruction">Undeploy</button>
+        </div>
+        <p class="hint small">Deploy makes a finished run answer picture-to-steps. A run that trained nothing
+          has nothing to serve, and the studio will say so rather than pretend.</p>
+      </div>
       <ol class="stages" id="stage-list"></ol>
       <pre class="console" id="run-log"></pre>
     </section>
