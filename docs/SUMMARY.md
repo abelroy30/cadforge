@@ -190,6 +190,37 @@ Stated plainly, because these are the things most likely to break first:
 
 ---
 
+## Data folders and rewards
+
+Added after the sections above were written, and verified live over HTTP:
+
+* **Folders instead of a bulk upload** (`src/ingest.rs`, the *Data folders*
+  panel). A source is an index, never a copy: files are read where they live, so
+  pointing at a large library costs nothing and removing a source never touches
+  the user's files. Up to ten, each re-scannable. Verified: adding, scanning,
+  the ten-folder cap, and that removing a source leaves the files on disk.
+* **The work, watched.** Every folder walk and every file read is streamed as it
+  happens, so the *Activity* panel shows work rather than a spinner.
+* **Sizes, labelled by how they are known.** Data is measured; a base model's
+  size is estimated from its parameter count, because the studio never downloads
+  weights; adapter sizes are measured from what runs wrote.
+* **Rewards as data** (`src/reward.rs`, the *Rewards* panel). Four kinds, each
+  weighted and switchable, with a preview that scores one part and shows the
+  working. Validity is a gate rather than a weighted term; a reward with nothing
+  to compare against abstains and says so; and the set travels with the
+  manifest, so a finished run can be explained after the rewards are edited.
+
+Still to come, in order: the GRPO loop with the staged curriculum and a
+convergence test (a plateau with a hard ceiling), Deploy (a local inference
+endpoint plus the adapter to download), and the interface tidy-up that groups
+the panels.
+
+One caveat worth stating plainly: the reward preview scores the studio's own
+reading of a part against itself, so a perfect score there is expected. The
+number becomes informative when it is scoring a different program, which is what
+training does - and until a real run has happened, no reward has been tested
+against a model.
+
 ## Where to go next
 
 In the order the project is blocked, not by attractiveness:

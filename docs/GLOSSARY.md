@@ -257,6 +257,43 @@ Advice strings cover the missing-GPU, low-VRAM, missing-torch and
 CUDA-not-visible cases. "Nothing is installed, nothing is downloaded, and no
 probe leaves the computer." A missing tool is information, not an error.
 
+### `src/ingest.rs`
+
+Turning a file into an artifact, from either front door. An upload copies its
+bytes in; a folder source reads them where they live and copies nothing. Both go
+through the same `inspect`, so an artifact cannot mean two different things
+depending on how it arrived - which is also why the inspection lives here rather
+than in the API layer.
+
+Key items: `WorkEvent` (one step of progress, for the live feed), `inspect`,
+`upload`, `read_referenced`, `scan_worker`, `walk`, `dir_bytes`, `human_bytes`,
+`actions_for`, `storage_report`.
+
+`walk` skips hidden and build directories, never follows a symlink (so a link
+pointing up its own tree cannot loop) and sorts what it finds, so a re-scan is
+deterministic.
+
+`storage_report` reports two kinds of number differently on purpose: the size of
+the data is *measured*, while a base model's size is *estimated* from its
+parameter count, because the studio never downloads weights. Adapter sizes are
+measured from what runs wrote.
+
+### `src/reward.rs`
+
+The reward a training run is paid with. Four kinds - `geometry`,
+`recorded_history`, `simplicity`, `scale` - plus the rules that keep them honest:
+validity is a gate rather than a weighted term, and a reward with nothing to
+compare against abstains and says so.
+
+Key items: `KINDS`, `Target`, `Component`, `Verdict`, `evaluate`, `defaults`,
+`ensure_defaults`, `spec_for_manifest`, `preview`.
+
+`Target` is the truth in pieces: a picture gives no geometry, a STEP part gives
+geometry but no recorded history, and a SolidWorks export gives the history but
+nothing to rebuild against. Each reward takes what it needs and abstains
+otherwise. The `Source` and `Reward` types themselves live in `src/model.rs`
+with the rest of the persisted state.
+
 ## 6. Web front end (`static/`)
 
 ### `static/index.html`

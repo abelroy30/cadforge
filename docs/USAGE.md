@@ -269,6 +269,47 @@ stops working.
 
 ---
 
+### 4.12 Point at a folder instead of uploading
+
+Uploading is for one or two files. A library belongs in a folder, and the studio
+indexes it **where it is**: nothing is copied, so pointing at 50 GB costs
+nothing and your files are never touched.
+
+1. In **Data folders**, paste the **absolute** path of a folder of parts,
+   drawings and pictures. A relative path is refused, with the reason: it would
+   mean a different folder every time it was scanned.
+2. Press **Add folder**. The scan starts at once and reports as it goes - the
+   walk, then every file it reads - in the **Activity** feed.
+3. Up to **ten** folders. Each row shows what the last scan found, with buttons
+   to re-scan it and to remove it.
+
+Removing a folder forgets its artifacts; it does not delete anything on disk,
+which is the whole point of indexing rather than importing. Files nothing here
+can read (notes, archives) are counted as *skipped* rather than failing the
+scan, and a file that disappears stops being an artifact on the next scan.
+`CADFORGE_SCAN_LIMIT` caps how many files one scan will look at.
+
+### 4.13 Watch one file being read
+
+**Open one part or drawing...** takes a single file, reads its lane from the
+extension, and shows the extraction in the **Inspector** as a tree: the header,
+the B-rep summary, and the operations reconstructed from it, each with where its
+value came from.
+
+### 4.14 Tune the reward before spending hours on it
+
+**Rewards** is what a training run is paid for. Every term has a weight and a
+switch, and switching one off keeps its settings but stops it voting.
+
+**Try it on a part** scores the studio's own reading of one artifact and shows
+each term's raw measure, its score and its contribution. What you see is what
+the trainer will be optimised against, because the set travels with the
+manifest.
+
+> A score of 100% here is expected and means little on its own: the reading is
+> being scored against itself. The number becomes informative when it is scoring
+> a *different* program, which is what training does.
+
 ## 5. Driving the API directly
 
 Every route is JSON. Uploads are the raw body with the name in the query string,
@@ -330,6 +371,22 @@ has the pixels; use the *Picture to steps* panel unless you are writing one.
 Errors are always `{"error": "..."}` with a real HTTP status.
 
 ---
+
+# folders: add, re-scan, remove. Indexed in place - nothing is copied.
+curl -s -X POST localhost:8787/api/sources -H 'content-type: application/json'   -d '{"path":"/home/me/parts"}'
+curl -s -X POST localhost:8787/api/sources/<source-id>/scan
+curl -s -X DELETE localhost:8787/api/sources/<source-id>
+
+# watch folders and files being read, one event per file (Ctrl-C to stop)
+curl -N localhost:8787/api/work/events
+
+# what the data and the models weigh
+curl -s localhost:8787/api/storage
+
+# the reward a run is paid with, and what one part would score
+curl -s -X POST localhost:8787/api/rewards/preview -H 'content-type: application/json'   -d '{"asset_id":"<id>"}'
+curl -s -X PUT localhost:8787/api/rewards/<id> -H 'content-type: application/json'   -d '{"weight":2.5}'
+curl -s -X PUT localhost:8787/api/rewards/<id> -H 'content-type: application/json'   -d '{"enabled":false}'
 
 ## 6. Configuration
 

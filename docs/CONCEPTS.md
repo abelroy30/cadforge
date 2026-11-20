@@ -261,6 +261,53 @@ from.
 This is deliberate: the panel always works, and a trained model has a baseline
 to beat.
 
+## Source - an index, not a copy
+
+A **source** is a folder of training data the studio watches, up to ten. It is an
+*index*: files are read where they live and nothing is duplicated, so pointing at
+a large library is free and removing a source never touches the user's files.
+
+Two consequences follow, and both are deliberate:
+
+* Moving or renaming files behind the studio's back breaks the index, so a
+  source can be re-scanned. The walk is sorted, so a re-scan refreshes the
+  records it already has instead of duplicating them, and a file that has
+  vanished stops being an artifact.
+* Deleting an *artifact* that came from a source deletes the record, not the
+  file. The studio removes only files it owns: the ones it copied in on upload.
+
+## Reward - what a run is paid for
+
+A **reward** is a named, weighted measure of how good one operation program is.
+Rewards are computed in Rust rather than inside the trainer, because a reward
+decides what a model learns: it has to be inspectable and reproducible, or
+nobody can argue with it.
+
+Four kinds, all computable from what the studio already reads:
+
+| Kind | Measures | Against |
+|---|---|---|
+| `geometry` | the Chamfer distance from the rebuilt part to the real one | the part's own triangles |
+| `recorded_history` | how much of the recorded feature sequence was reproduced, **in order** | the SolidWorks export |
+| `simplicity` | operations used | the reference operation count |
+| `scale` | the rebuilt size, axis by axis | the real size |
+
+Three rules separate a reward that teaches something from one that only looks
+like it does:
+
+* **Validity is a gate, not a term.** A program that does not build scores zero
+  however good its shape is. A term a model can trade against shape is a term it
+  will trade against shape.
+* **A reward with nothing to compare against abstains** rather than scoring
+  zero, and says why. A term that paid out regardless - the first version of
+  *simplicity* did - would teach the model to delete operations.
+* **The reward travels with the data.** The manifest carries the set a run is
+  paid with, so a finished run can be explained after the rewards have been
+  edited.
+
+The set is seeded on first load and then belongs to the user: weights can be
+re-tuned and terms switched off without a rebuild.
+
 ## Local-only, and other standing rules
 
 The project has a few invariants that are worth knowing because they explain
