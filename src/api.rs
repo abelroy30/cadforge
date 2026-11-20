@@ -714,20 +714,36 @@ async fn predict(
     let mut notes: Vec<String> = Vec::new();
 
     // A named adapter wins, then whatever has been deployed. Deployment has to
-    // change what answers, or it is only a note to self.
-    let adapter = {
+    // change what answers, or it is only a note to self - and it carries the
+    // base model it was trained against, because an adapter against different
+    // weights is not the trained model, and a silent mismatch is worse than a
+    // failure the notes can report.
+    let (adapter, adapter_model) = {
         let db = app.db.lock().unwrap();
-        std::env::var("CADFORGE_ADAPTER")
+        let named = std::env::var("CADFORGE_ADAPTER")
             .ok()
-            .filter(|a| !a.trim().is_empty())
-            .or_else(|| db.deployment.as_ref().map(|d| d.adapter.clone()))
+            .filter(|a| !a.trim().is_empty());
+        match named {
+            Some(named) => (Some(named), None),
+            None => match &db.deployment {
+                Some(d) => (
+                    Some(d.adapter.clone()),
+                    if d.base_model_id.is_empty() {
+                        None
+                    } else {
+                        Some(d.base_model_id.clone())
+                    },
+                ),
+                None => (None, None),
+            },
+        }
     };
 
     if let Some(cmd) = std::env::var("CADFORGE_VISION")
         .ok()
         .filter(|c| !c.trim().is_empty())
     {
-        match vision_command(&cmd, adapter.as_deref(), &body, q.w, q.h).await {
+        match vision_command(&cmd, adapter.as_deref(), adapter_model.as_deref(), &body, q.w, q.h).await {
             Ok(mut inference) => {
                 inference.source = format!("model: {cmd}");
                 return Ok(Json(serde_json::to_value(inference).unwrap_or_default()));
@@ -738,7 +754,19 @@ async fn predict(
         }
     }
 
-    let mut inference = crate::vision::infer(&body, q.w, q.h).map_err(ApiError::bad_request)?;
+    let mut inference = match crate::vision::infer(&body, q.w, q.h) {
+        Ok(inference) => inference,
+        // A failing baseline must not swallow why the configured model did not
+        // answer. Otherwise a broken adapter is reported as a bad picture, and
+        // the one message the user sees points at the wrong thing entirely.
+        Err(baseline) if !notes.is_empty() => {
+            return Err(ApiError::bad_request(format!(
+                "{baseline} - and the configured vision model did not answer either: {}",
+                notes.join("; ")
+            )));
+        }
+        Err(baseline) => return Err(ApiError::bad_request(baseline.to_string())),
+    };
     inference.notes.splice(0..0, notes);
     let mut value = serde_json::to_value(&inference).unwrap_or_default();
     if let Some(id) = &q.asset_id {
@@ -757,6 +785,7 @@ async fn predict(
 async fn vision_command(
     cmd: &str,
     adapter: Option<&str>,
+    model: Option<&str>,
     rgba: &[u8],
     w: usize,
     h: usize,
@@ -777,6 +806,11 @@ async fn vision_command(
         .env("CADFORGE_HEIGHT", h.to_string());
     if let Some(adapter) = adapter {
         command.env("CADFORGE_ADAPTER", adapter);
+    }
+    // The base the adapter was trained against, so the command loads the weights
+    // the adapter actually belongs to instead of its own default.
+    if let Some(model) = model {
+        command.env("CADFORGE_MODEL", model);
     }
     let out = command.output().await;
     let _ = std::fs::remove_file(&path);
@@ -1135,6 +1169,7 @@ async fn deploy_run(
             .to_string_lossy()
             .to_string(),
         base_model,
+        base_model_id: run.base_model_id.clone(),
         deployed_at: now(),
     };
     db.deployment = Some(deployment.clone());

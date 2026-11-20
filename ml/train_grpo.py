@@ -204,13 +204,52 @@ class StubPolicy:
             self.noise = max(0.02, self.noise * 0.93)
 
 
+def load_vlm(model_name, torch):
+    """Load the model with the class that actually matches it.
+
+    Qwen3-VL and Qwen2.5-VL are different architectures, so loading one with the
+    other's class either fails outright or - far worse - builds a model that runs
+    and is not the one that was asked for. The generic image-text auto-class
+    covers both, and the name it resolved to is printed, so the run log says what
+    was really loaded rather than what was hoped for.
+    """
+    import transformers
+
+    attempts = []
+    auto = getattr(transformers, "AutoModelForImageTextToText", None)
+    if auto is not None:
+        attempts.append(("AutoModelForImageTextToText", auto))
+    # Named fallbacks, for a transformers old enough to lack the auto-class on
+    # this architecture but new enough to have the model itself.
+    for name in ("Qwen3VLForConditionalGeneration", "Qwen2_5_VLForConditionalGeneration"):
+        cls = getattr(transformers, name, None)
+        if cls is not None:
+            attempts.append((name, cls))
+
+    errors = []
+    for name, cls in attempts:
+        try:
+            model = cls.from_pretrained(
+                model_name, torch_dtype=torch.bfloat16, device_map="auto"
+            )
+            say(f"loaded {model.__class__.__name__} for {model_name}")
+            return model
+        except Exception as exc:  # noqa: BLE001 - reported with the class that failed
+            errors.append(f"{name}: {exc}")
+
+    raise SystemExit(
+        f"could not load {model_name} with transformers {transformers.__version__}. "
+        "Tried: " + "; ".join(errors) + ". Upgrade with: pip install -U transformers peft"
+    )
+
+
 class VlmPolicy:
     """The real thing: a small vision-language model with a LoRA adapter."""
 
     def __init__(self, model_name, group, lr):
         try:
             import torch
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+            from transformers import AutoProcessor
             from peft import LoraConfig, get_peft_model
         except ImportError as exc:  # pragma: no cover - depends on the machine
             raise SystemExit(
@@ -221,12 +260,11 @@ class VlmPolicy:
 
         self.torch = torch
         self.group = group
+        # The most recent sampling is kept so the update can compute the loss on
+        # the very answers that were scored, conditioned on the same picture.
+        self._last = None
         self.processor = AutoProcessor.from_pretrained(model_name)
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
+        model = load_vlm(model_name, torch)
         lora = LoraConfig(
             r=16,
             lora_alpha=32,
@@ -259,24 +297,36 @@ class VlmPolicy:
         return [{"role": "user", "content": content}]
 
     def _encode(self, chat):
+        # return_dict=True is what carries the picture. Without it the processor
+        # hands back token ids only, and a vision-language model silently becomes
+        # a text one that never sees the part - which is exactly the kind of
+        # quiet no-op this project keeps having to dig out.
         return self.processor.apply_chat_template(
-            chat, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+            chat,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
         )
 
     def sample(self, pair, want, masked=None):
         chat = self._messages(pair, want, masked)
-        prompt = self._encode(chat)
-        prompt = prompt.to(self.model.device)
+        inputs = self._encode(chat).to(self.model.device)
+        prompt_len = int(inputs["input_ids"].shape[1])
         with self.torch.no_grad():
             out = self.model.generate(
-                prompt,
+                **inputs,
                 do_sample=True,
                 temperature=0.9,
                 top_p=0.95,
                 max_new_tokens=512,
                 num_return_sequences=self.group,
             )
-        text = self.processor.batch_decode(out[:, prompt.shape[1]:], skip_special_tokens=True)
+        answers = out[:, prompt_len:]
+        # Kept for the update step, so it learns from the answers that were
+        # actually scored rather than from a fresh sample that was not.
+        self._last = (inputs, answers.tolist(), prompt_len)
+        text = self.processor.batch_decode(answers, skip_special_tokens=True)
         return [self._as_program(t) for t in text]
 
     @staticmethod
@@ -290,26 +340,42 @@ class VlmPolicy:
         except json.JSONDecodeError:
             return {"version": 1, "units": "mm", "ops": []}
 
-    def learn(self, pairs_batch):
-        """Advantage-weighted supervised step over the sampled candidates.
+    def learn(self, advantages):
+        """One advantage-weighted step per sampled candidate.
 
-        This is the update half of the loop. It is deliberately the simple,
-        inspectable version: weight the model's own loss on each candidate by how
-        much better than its group it scored. The PPO ratio and KL term that
-        would make this full GRPO are not here yet."""
-        for prompt_ids, answer_ids, advantage in pairs_batch:
-            if not answer_ids:
-                continue
+        The loss is the model's own loss on the answer it produced, conditioned
+        on the same picture and prompt - the prompt and the image tokens are
+        masked out, so only the answer is learned. Each candidate's loss is
+        weighted by how much better than its group it scored.
+
+        This is deliberately the simple, inspectable version: the PPO ratio and
+        the KL term that would make it full GRPO are not here yet."""
+        if not self._last:
+            return
+        torch = self.torch
+        inputs, answers, prompt_len = self._last
+        for row, advantage in zip(answers, advantages):
+            answer = torch.tensor([row], device=self.model.device)
+            full = torch.cat([inputs["input_ids"], answer], dim=1)
+            labels = full.clone()
+            labels[:, :prompt_len] = -100
+            batch = {
+                key: value
+                for key, value in inputs.items()
+                if key != "input_ids"
+            }
+            batch["input_ids"] = full
+            batch["labels"] = labels
+            if "attention_mask" in inputs:
+                batch["attention_mask"] = torch.cat(
+                    [inputs["attention_mask"], torch.ones_like(answer)], dim=1
+                )
             weight = 1.0 + max(-1.0, min(2.0, float(advantage)))
-            labels = self.torch.tensor([answer_ids], device=self.model.device)
-            attention = self.torch.ones_like(labels)
-            out = self.model(
-                input_ids=labels, attention_mask=attention, labels=labels
-            )
+            out = self.model(**batch)
             loss = out.loss * weight
             self.optimiser.zero_grad()
             loss.backward()
-            self.torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimiser.step()
 
     def save(self, path):
@@ -447,8 +513,11 @@ def main():
             spread = (sum((r - mean) ** 2 for r in group_rewards) / len(group_rewards)) ** 0.5
             advantages = [(r - mean) / (spread + 1e-6) for r in group_rewards]
 
-            if stub:
-                policy.learn(advantages)
+            # The update happens for a real model too. This used to be skipped
+            # unless the stub was running, so a real policy was loaded, sampled
+            # and scored and then never changed: a training loop that evaluated
+            # itself and never learned.
+            policy.learn(advantages)
             step += 1
             best = max(best, max(group_rewards))
             history.append(mean)

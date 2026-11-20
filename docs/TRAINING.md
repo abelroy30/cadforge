@@ -45,15 +45,17 @@ If you see `CUDA out of memory`, lower `CADFORGE_MAXLEN` first, then
 
 ## Which base model
 
-Set `CADFORGE_MODEL` to change it. Sensible choices:
+Set `CADFORGE_MODEL` to change it, and read **`docs/MODELS.md`** for the whole
+picture - how to fetch the weights once, how to prove which class the trainer
+loaded, and how deploying an adapter finds the base it belongs to.
 
-* `Qwen/Qwen2-VL-2B-Instruct` - the default. Starts on a 3070 without drama, and
-  is the right size for a first run: get the pipeline working here first.
-* `OpenGVLab/InternVL2-4B` - an actual 4-billion-parameter vision-language model,
-  which is what you asked for.
-* `Qwen/Qwen2.5-VL-3B-Instruct` or `-7B-Instruct` - strong at structured output
-  and reading diagrams. The 7B will not fit on 8 GB even in 4-bit at useful
-  sequence lengths; it needs 12 GB or more.
+* **`Qwen/Qwen3-VL-4B-Instruct`** - use this now. Trains on an 8 GB card in 4-bit
+  with LoRA, it is already the default of `ml/train_grpo.py`, and it can read a
+  dimension off a drawing - the one thing the geometric baseline cannot do.
+* `Qwen/Qwen2.5-VL-3B-Instruct` - the safe fallback if a 4B model is tight.
+* `Qwen/Qwen2-VL-2B-Instruct` - the default of `ml/train_vision.py`, and the right
+  size for a first end-to-end run while you are still finding your way.
+* `Qwen/Qwen3-VL-8B-Instruct` - better grounding, but it wants 16 GB to train.
 
 Whatever you pick, run one epoch on 100 pairs first. If that works, scale up.
 
@@ -102,7 +104,7 @@ Then either use the studio - register a base model, make a dataset, press
 ```bat
 set CADFORGE_DATASET=data\runs\<id>\dataset.json
 set CADFORGE_OUT=checkpoints\run1
-set CADFORGE_MODEL=OpenGVLab/InternVL2-4B
+set CADFORGE_MODEL=Qwen/Qwen3-VL-4B-Instruct
 python ml\train_vision.py
 ```
 
@@ -126,6 +128,11 @@ set CADFORGE_ADAPTER=checkpoints\run1\adapter
 Now "Picture to steps" runs your model first, and falls back to the built-in
 baseline - loudly, with the reason - if it fails. The panel shows which one
 answered.
+
+Or press **Deploy** on the finished run in the **Runs** tab, which is the same
+thing without the environment: the studio serves that run's adapter, and hands
+the command the base model the adapter was actually trained against, so the two
+cannot silently disagree. See `docs/MODELS.md`.
 
 ## Installing it all offline
 
@@ -152,9 +159,9 @@ and the trainer all run locally.
 2. **Rebuild and measure.** The panel's *Rebuild this* button turns the predicted
    steps into real geometry; the studio scores the result against the original
    (chamfer distance and size delta). That number is the honest score.
-3. **Watch the held-out split.** The trainer holds out 5% of pairs and reports
-   the counts. If training loss falls and held-out quality does not, you are
-   memorising.
+3. **Watch the held-out split.** The trainer holds out a slice of the pairs (10%
+   by default, `CADFORGE_VAL_PCT`) and reports the counts. If training loss falls
+   and held-out quality does not, you are memorising.
 
 ## Honest limits
 

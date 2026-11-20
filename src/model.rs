@@ -286,6 +286,11 @@ pub struct Deployment {
     /// The base model it was adapted from, by name, so the record reads on its
     /// own after the model row itself is gone.
     pub base_model: String,
+    /// The base model's id, so a deployment can say which weights the adapter
+    /// belongs to. A LoRA adapter is meaningless against a different base, and
+    /// without this the vision command falls back to its own default model.
+    #[serde(default)]
+    pub base_model_id: String,
     pub deployed_at: String,
 }
 

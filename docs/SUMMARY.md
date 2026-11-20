@@ -270,6 +270,41 @@ that every button explains itself on hover.
 Still not verified: no adapter has ever answered a picture, because none has
 been trained here.
 
+## The model path, and three bugs in it (part 2)
+
+Writing `docs/MODELS.md` meant reading the trainer's model path closely, and it
+had three defects that would have made the guide a lie:
+
+1. **The RL loop never updated a real model.** `policy.learn` was called only
+   inside `if stub:`, so a run with actual weights loaded the model, sampled
+   candidates, scored them, and then saved an untouched adapter. It was a loop
+   that evaluated its policy and never changed it. Both policies now take the
+   same `learn(advantages)`, and the call is unconditional.
+2. **`Qwen2_5_VLForConditionalGeneration` was hardcoded** while the default model
+   was `Qwen/Qwen3-VL-4B-Instruct` - a different architecture. Loading one with
+   the other's class fails, or worse, builds something that runs and is not what
+   was asked for. `load_vlm` now tries the generic image-text auto-class, then
+   named classes, prints the class it resolved to, and on failure lists every
+   class it tried.
+3. **The image never reached the model.** `_encode` called
+   `apply_chat_template(...)` without `return_dict=True`, which returns token ids
+   and no `pixel_values`: a vision-language model silently became a text one that
+   never saw the part. And `learn` trained on the answer tokens as *input*,
+   unconditioned on the prompt; it now builds prompt+answer with the picture and
+   masks the prompt, so the loss is the model's own loss on the answers that were
+   actually scored.
+
+Two of these - the missing image and the missing update - are the same failure
+mode this project keeps meeting: something that runs, reports success, and does
+nothing. Neither is caught by any test here, because both need weights; what is
+recorded instead is that the stub loop still converges after the change.
+
+**Deploying an adapter now finds its base.** `Deployment` carries the base
+model's id as well as its name, and the studio passes it to the vision command as
+`CADFORGE_MODEL`. Before this, deploying a Qwen3-VL-4B adapter left `predict.py`
+on its own default base - an adapter loaded onto different weights is not the
+trained model, and nothing would have said so.
+
 ## Where to go next
 
 In the order the project is blocked, not by attractiveness:
@@ -318,4 +353,5 @@ misdiagnosis, as described at the top of this file.
 | `docs/GLOSSARY.md` | every file, and the dependency map |
 | `docs/PROJECT.md` | what it is, for whom, and why it is built this way |
 | `docs/TRAINING.md` | what fine-tuning on a small GPU really takes |
+| `docs/MODELS.md` | which model to load, fetching the weights, training and deploying it |
 | `docs/SUMMARY.md` | this file |
