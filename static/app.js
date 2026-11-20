@@ -159,6 +159,8 @@ async function refresh() {
   renderDatasets();
   renderRuns();
   renderPickers();
+  renderRewards();
+  renderRewardPicker();
   try { await renderStorage(); } catch (_) { /* the panel says so itself */ }
 }
 
@@ -969,6 +971,159 @@ function renderVision(out) {
   box.append(btn);
 }
 
+/* -------------------------------------------------------------- rewards */
+
+/* The reward a run is paid for, shown as data rather than buried in a trainer.
+   Weight and the on/off switch are editable in place, because tuning a reward is
+   a loop worth closing quickly: change a number, score a part, look. */
+function renderRewards() {
+  const list = $("#reward-list");
+  const rewards = STATE.rewards || [];
+  const rows = rewards.map((r) => {
+    const row = el("div", "row reward" + (r.enabled ? "" : " off"));
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = r.enabled;
+    cb.title = r.enabled ? "Stop this reward voting" : "Let this reward vote again";
+    cb.addEventListener("change", () => updateReward(r.id, { enabled: cb.checked }));
+    row.append(cb);
+
+    const col = el("div", "col");
+    col.append(el("div", "name", r.name));
+    const params = r.params && Object.keys(r.params).length
+      ? Object.keys(r.params).map((k) => k + " " + r.params[k]).join(", ")
+      : "";
+    col.append(el("div", "meta", r.kind + (params ? "  ·  " + params : "")));
+    row.append(col);
+
+    const w = document.createElement("input");
+    w.type = "number";
+    w.className = "weight";
+    w.step = "0.1";
+    w.min = "0.1";
+    w.value = r.weight;
+    w.title = "How much this reward's opinion counts, against the others";
+    w.addEventListener("change", () => {
+      const v = parseFloat(w.value);
+      if (!isFinite(v) || v <= 0) { w.value = r.weight; return; }
+      updateReward(r.id, { weight: v });
+    });
+    row.append(w);
+    row.append(removeButton(r.name, "/api/rewards/" + r.id));
+    return row;
+  });
+  section(list, rows, "No rewards. Add one to say what a run should be paid for.");
+
+  const total = rewards.filter((r) => r.enabled).reduce((a, r) => a + r.weight, 0);
+  const off = rewards.filter((r) => !r.enabled).length;
+  $("#reward-count").textContent = rewards.length
+    ? (off ? off + " switched off, " : "") + "weights add up to " + total.toFixed(1)
+    : "";
+}
+
+async function addReward() {
+  const name = prompt("Name the reward", "matches the part");
+  if (!name) return;
+  const kind = prompt(
+    "Kind - geometry, recorded_history, simplicity or scale",
+    "geometry"
+  );
+  if (!kind) return;
+  const weight = parseFloat(prompt("Weight, against the other rewards", "1") || "1");
+  try {
+    await api("/api/rewards", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, kind, weight }),
+    });
+  } catch (err) {
+    alert(err.message || String(err));
+  }
+  await refresh();
+}
+
+async function updateReward(id, patch) {
+  try {
+    await api("/api/rewards/" + id, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+  } catch (err) {
+    alert(err.message || String(err));
+  }
+  await refresh();
+}
+
+/* Which artifacts have something worth scoring against: a STEP part carries
+   geometry, an export carries the real history. A picture carries neither. */
+function renderRewardPicker() {
+  const sel = $("#sel-reward-asset");
+  const keep = sel.value;
+  sel.textContent = "";
+  STATE.assets
+    .filter((a) => a.kind === "step" || a.kind === "history")
+    .forEach((a) => sel.append(new Option(a.name, a.id)));
+  if (!sel.options.length) {
+    sel.append(new Option("import a STEP part or a SolidWorks export first", ""));
+  }
+  if (keep) sel.value = keep;
+}
+
+/* Score one part with the current reward set. The point is to see the working
+   before spending hours of training on a number nobody has looked at. */
+async function scorePreview() {
+  const box = $("#reward-preview");
+  const sel = $("#sel-reward-asset");
+  box.textContent = "";
+  if (!sel.value) {
+    box.append(el("p", "hint", "Pick a part first."));
+    return;
+  }
+  box.append(el("p", "hint", "scoring..."));
+  try {
+    const v = await api("/api/rewards/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ asset_id: sel.value }),
+    });
+    renderVerdict(v, box);
+  } catch (err) {
+    box.textContent = "";
+    box.append(el("p", "hint", "could not score it: " + err.message));
+  }
+}
+
+function renderVerdict(v, box) {
+  box.textContent = "";
+  const head = el("div", "verdict" + (v.valid ? "" : " bad"));
+  head.append(el("span", "total", "total " + (v.total * 100).toFixed(1) + "%"));
+  head.append(el("span", "gate", v.gate));
+  box.append(head);
+
+  if (!v.components.length) {
+    box.append(el("p", "hint",
+      "Nothing could be measured. That is not a zero: it means no reward had anything " +
+      "to compare this against."));
+  }
+  const table = el("table", "streams");
+  const hr = el("tr");
+  ["reward", "measure", "score", "weight"].forEach((h) => hr.append(el("th", null, h)));
+  table.append(hr);
+  (v.components || []).forEach((c) => {
+    const tr = el("tr");
+    tr.title = c.detail;
+    tr.append(el("td", "name", c.name));
+    tr.append(el("td", "num", c.measure.toFixed(3)));
+    tr.append(el("td", "num", (c.score * 100).toFixed(0) + "%"));
+    tr.append(el("td", "num", String(c.weight)));
+    table.append(tr);
+  });
+  box.append(table);
+  (v.skipped || []).forEach((s) => box.append(el("p", "hint small", s)));
+}
+
 /* ---------------------------------------------------------------- system */
 
 function sysLine(tone, label, value) {
@@ -1310,6 +1465,8 @@ function wire() {
     if (e.key === "Enter") { e.preventDefault(); addSource(); }
   });
   $("#btn-storage").addEventListener("click", () => renderStorage().catch(() => {}));
+  $("#btn-reward").addEventListener("click", addReward);
+  $("#btn-reward-preview").addEventListener("click", scorePreview);
 
   // One file, and its lane read from the extension - the shortest path to
   // watching a single part or drawing being read.

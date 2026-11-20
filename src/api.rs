@@ -1,7 +1,7 @@
 //! HTTP API. JSON in, JSON out; one SSE stream carries live run progress.
 
 use crate::model::{
-    now, Asset, BaseModel, Dataset, Db, Run, RunStatus, Source, SourceState, MAX_SOURCES,
+    now, Asset, AssetKind, BaseModel, Dataset, Db, Run, RunStatus, Source, SourceState, MAX_SOURCES,
 };
 use crate::{ingest, stl, App};
 use axum::body::Bytes;
@@ -930,9 +930,215 @@ async fn work_events(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+#[derive(Deserialize)]
+struct NewReward {
+    name: String,
+    kind: String,
+    #[serde(default = "weight_one")]
+    weight: f64,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+fn weight_one() -> f64 {
+    1.0
+}
+
+/// Add a reward.
+///
+/// The kind has to be one this build can actually compute. A reward that can
+/// never vote is worse than no reward at all, because it looks like it is doing
+/// something while the model learns from the terms that remain.
+async fn create_reward(
+    State(app): State<Arc<App>>,
+    Json(body): Json<NewReward>,
+) -> Result<Json<crate::model::Reward>, ApiError> {
+    if body.name.trim().is_empty() {
+        return Err(ApiError::bad_request("a reward needs a name"));
+    }
+    if !crate::reward::KINDS.contains(&body.kind.as_str()) {
+        return Err(ApiError::bad_request(format!(
+            "unknown reward kind {:?}; this build can compute {}",
+            body.kind,
+            crate::reward::KINDS.join(", ")
+        )));
+    }
+    if !body.weight.is_finite() || body.weight <= 0.0 {
+        return Err(ApiError::bad_request(
+            "a weight has to be a positive number",
+        ));
+    }
+    let reward = crate::model::Reward {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: body.name.trim().to_string(),
+        kind: body.kind,
+        weight: body.weight,
+        enabled: true,
+        params: body.params,
+        created_at: now(),
+    };
+    let mut db = app.db.lock().unwrap();
+    db.rewards.push(reward.clone());
+    db.save(&app.root).map_err(ApiError::internal)?;
+    Ok(Json(reward))
+}
+
+#[derive(Deserialize)]
+struct RewardEdit {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    weight: Option<f64>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    params: Option<serde_json::Value>,
+}
+
+/// Change a reward in place.
+///
+/// Weight and enabled are the two that get touched constantly while tuning, so
+/// both are editable without leaving the page - and a disabled reward is kept
+/// rather than deleted, because turning one off is how you find out what it was
+/// contributing.
+async fn update_reward(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(body): Json<RewardEdit>,
+) -> Result<Json<crate::model::Reward>, ApiError> {
+    if let Some(w) = body.weight {
+        if !w.is_finite() || w <= 0.0 {
+            return Err(ApiError::bad_request(
+                "a weight has to be a positive number",
+            ));
+        }
+    }
+    let mut db = app.db.lock().unwrap();
+    let reward = db
+        .rewards
+        .iter_mut()
+        .find(|r| r.id == id)
+        .ok_or_else(|| ApiError::not_found("reward"))?;
+    if let Some(name) = body.name {
+        if name.trim().is_empty() {
+            return Err(ApiError::bad_request("a reward needs a name"));
+        }
+        reward.name = name.trim().to_string();
+    }
+    if let Some(w) = body.weight {
+        reward.weight = w;
+    }
+    if let Some(enabled) = body.enabled {
+        reward.enabled = enabled;
+    }
+    if let Some(params) = body.params {
+        reward.params = params;
+    }
+    let out = reward.clone();
+    db.save(&app.root).map_err(ApiError::internal)?;
+    Ok(Json(out))
+}
+
+async fn delete_reward(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut db = app.db.lock().unwrap();
+    if !db.rewards.iter().any(|r| r.id == id) {
+        return Err(ApiError::not_found("reward"));
+    }
+    db.rewards.retain(|r| r.id != id);
+    db.save(&app.root).map_err(ApiError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct RewardPreview {
+    asset_id: String,
+    #[serde(default)]
+    program: Option<crate::ops::Program>,
+}
+
+/// Score a program against a part and show the working.
+///
+/// This is what makes a reward set arguable *before* hours of training are spent
+/// on it: the same numbers the trainer will use, on one part, right now.
+async fn preview_reward(
+    State(app): State<Arc<App>>,
+    Json(body): Json<RewardPreview>,
+) -> Result<Json<crate::reward::Verdict>, ApiError> {
+    let (target, inferred) = target_and_program(&app, &body.asset_id)?;
+    let program = match body.program.or(inferred) {
+        Some(p) => p,
+        None => {
+            return Err(ApiError::bad_request(
+                "this artifact carries no program of its own - hand me one to score",
+            ))
+        }
+    };
+    let verdict = {
+        let db = app.db.lock().unwrap();
+        crate::reward::preview(&program, &target, &db)
+    };
+    Ok(Json(verdict))
+}
+
+/// The truth about one artifact: its geometry, and the history it recorded.
+///
+/// Either half can be missing, and that is reported rather than papered over: a
+/// STEP part carries geometry but not the history it was built with, and a
+/// SolidWorks export carries the history but no geometry at all.
+fn target_and_program(
+    app: &App,
+    id: &str,
+) -> Result<(crate::reward::Target, Option<crate::ops::Program>), ApiError> {
+    let asset = {
+        let db = app.db.lock().unwrap();
+        db.asset(id)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found("asset"))?
+    };
+    let bytes = std::fs::read(asset.bytes_path(&app.root))
+        .map_err(|_| ApiError::not_found("asset file"))?;
+    match asset.kind {
+        AssetKind::Step => {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let analysis = crate::step::analyze(&text).map_err(ApiError::bad_request)?;
+            let file = crate::step::StepFile::parse(&text).map_err(ApiError::bad_request)?;
+            let program = crate::step::to_program(&file);
+            let target = crate::reward::Target {
+                triangles: analysis.triangles,
+                // A STEP part records no history, so the operations reconstructed
+                // from its geometry stand in as the reference for this part.
+                reference_ops: program.op_names().iter().map(|s| s.to_string()).collect(),
+            };
+            Ok((target, Some(program)))
+        }
+        AssetKind::History => {
+            let export = crate::swhist::parse(&String::from_utf8_lossy(&bytes))
+                .map_err(ApiError::bad_request)?;
+            let summary = crate::swhist::summary(&export);
+            let ops: Vec<String> = summary.steps.iter().skip(1).map(|l| l.op.clone()).collect();
+            if ops.is_empty() {
+                return Err(ApiError::bad_request("that export has no operations in it"));
+            }
+            Ok((
+                crate::reward::Target {
+                    triangles: Vec::new(),
+                    reference_ops: ops,
+                },
+                None,
+            ))
+        }
+        _ => Err(ApiError::bad_request(
+            "only a STEP part or a feature-tree export can be scored: they are the ones              that carry a build history",
+        )),
+    }
+}
+
 pub fn router(app: Arc<App>) -> axum::Router {
     use axum::extract::DefaultBodyLimit;
-    use axum::routing::{delete, get, post};
+    use axum::routing::{delete, get, post, put};
 
     axum::Router::new()
         .route("/api/state", get(state))
@@ -957,6 +1163,12 @@ pub fn router(app: Arc<App>) -> axum::Router {
         .route("/api/datasets/{id}/export", get(export_dataset))
         .route("/api/runs", post(create_run))
         .route("/api/runs/{id}/cancel", post(cancel_run))
+        .route("/api/rewards", post(create_reward))
+        .route(
+            "/api/rewards/{id}",
+            put(update_reward).delete(delete_reward),
+        )
+        .route("/api/rewards/preview", post(preview_reward))
         .route("/api/sources", post(create_source))
         .route("/api/sources/{id}", delete(delete_source))
         .route("/api/sources/{id}/scan", post(scan_source))

@@ -171,6 +171,21 @@
       <div class="list" id="model-list"></div>
     </section>
 
+    <section class="card">
+      <div class="card-head"><h2>Rewards</h2>
+        <button type="button" class="ghost mini" id="btn-reward" title="Add another term to what a run is paid for">Add</button></div>
+      <p class="hint">What a training run is paid for. A switched-off reward keeps its settings but
+        does not vote.</p>
+      <div class="list" id="reward-list"></div>
+      <p class="hint small" id="reward-count"></p>
+      <div class="section-label">Try it on a part</div>
+      <p class="hint small">Score the studio's own reading of a part and see what each reward
+        contributes.</p>
+      <select id="sel-reward-asset" title="A STEP part or a SolidWorks export to score against"></select>
+      <button type="button" class="ghost mini" id="btn-reward-preview" title="Score this part and show the working">Score it</button>
+      <div id="reward-preview"></div>
+    </section>
+
     <section class="card grow">
       <div class="card-head"><h2>Training</h2>
         <span class="pill small" id="run-pill">idle</span></div>

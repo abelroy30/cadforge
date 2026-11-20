@@ -187,6 +187,9 @@ pub fn manifest(dir: &Path, db: &Db, dataset_id: &str) -> Result<serde_json::Val
         "dataset": dataset.name,
         "dataset_id": dataset.id,
         "version": 1,
+        // The reward the run will be paid with travels with the data, so a
+        // trainer never has to guess what it is being asked to optimise.
+        "rewards": crate::reward::spec_for_manifest(db),
         "pairs": pairs,
         "counts": {
             "pictures": pairs.len(),

@@ -11,6 +11,7 @@ mod ole;
 mod ops;
 mod pipeline;
 mod propset;
+mod reward;
 mod score;
 mod sldworks;
 mod solid;
@@ -68,7 +69,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     std::fs::create_dir_all(&opts.data).ok();
 
-    let db = Db::load(&opts.data);
+    let mut db = Db::load(&opts.data);
+    // The reward a run is paid with is data, seeded visibly on first load so it
+    // can be read, argued with and edited - not compiled in where nobody can see
+    // what the model is actually being paid for.
+    let had_rewards = !db.rewards.is_empty();
+    crate::reward::ensure_defaults(&mut db);
+    if !had_rewards {
+        if let Err(e) = db.save(&opts.data) {
+            tracing::warn!("could not save the default reward set: {e}");
+        }
+    }
     let (bus, _) = broadcast::channel(512);
     let (asset_bus, _) = broadcast::channel(512);
     let (work_bus, _) = broadcast::channel(1024);

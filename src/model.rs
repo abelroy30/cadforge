@@ -219,6 +219,34 @@ pub struct Run {
     pub outputs: Vec<String>,
 }
 
+/// One term in the reward a training run is paid with.
+///
+/// A reward is data, not code: the user can add, weight, disable and re-tune
+/// them without a rebuild, because what a model is paid for is the single most
+/// consequential choice in the whole system and it should not be buried in a
+/// training script.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reward {
+    pub id: String,
+    pub name: String,
+    /// `geometry`, `recorded_history`, `simplicity` or `scale`.
+    pub kind: String,
+    pub weight: f64,
+    /// A disabled reward is left in place but does not vote. Turning one off is
+    /// the most common thing to want while tuning, and deleting it would lose
+    /// the setting.
+    #[serde(default = "enabled_default")]
+    pub enabled: bool,
+    /// Kind-specific settings, so a reward can be tuned without a code change.
+    #[serde(default)]
+    pub params: serde_json::Value,
+    pub created_at: String,
+}
+
+fn enabled_default() -> bool {
+    true
+}
+
 /// Everything the studio knows, persisted as one JSON document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Db {
@@ -229,6 +257,9 @@ pub struct Db {
     pub sources: Vec<Source>,
     #[serde(default)]
     pub models: Vec<BaseModel>,
+    /// The reward a run is paid with. Seeded with defaults on first load.
+    #[serde(default)]
+    pub rewards: Vec<Reward>,
     #[serde(default)]
     pub datasets: Vec<Dataset>,
     #[serde(default)]

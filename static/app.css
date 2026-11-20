@@ -338,3 +338,22 @@ table.streams td.num{text-align:right;white-space:nowrap;}
 .activity .row.walking .status,
 .activity .row.reading .status{color:var(--accent);border-color:var(--accent);}
 .activity .row.skipped .status{color:var(--warn);border-color:var(--warn);}
+
+/* -------------------------------------------------------------- rewards */
+
+/* A reward row is edited where it sits: the switch and the weight are the two
+   things that get touched while tuning, and neither should need a dialog. */
+.row.reward{align-items:center;}
+.row.reward.off{opacity:.55;}
+.row.reward .weight{
+  width:54px;background:#0d1116;color:var(--ink);border:1px solid var(--line-2);
+  border-radius:var(--radius-sm);padding:3px 4px;font:11px var(--mono);text-align:right;
+}
+.row.reward .weight:focus{outline:none;border-color:var(--accent);}
+.row.reward .meta{font:10.5px var(--mono);color:var(--muted);}
+
+/* The verdict on one program: the total first, then the working behind it. */
+.verdict{display:flex;align-items:baseline;gap:8px;margin:8px 0 4px;flex-wrap:wrap;}
+.verdict .total{font:600 14px var(--mono);color:var(--ok);}
+.verdict.bad .total{color:var(--err);}
+.verdict .gate{font-size:11px;color:var(--muted);}
